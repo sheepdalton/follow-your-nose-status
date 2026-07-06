@@ -1,0 +1,10 @@
+# Build output
+isovist
+*.o
+
+# Generated results (regenerable from data/in + source)
+data/out/
+
+# macOS
+.DS_Store
+{nvm_path}/
