@@ -18,13 +18,14 @@ void MetricsExporter::exportCSV(const std::vector<IsovistRecord>& records,
     if (!out)
         throw std::runtime_error("MetricsExporter: cannot open for writing: " + outputPath);
 
-    out << "id,x,y,area,perimeter,degree,choice,d_choice,a_choice\n";
+    out << "id,x,y,area,perimeter,degree,choice,d_choice,a_choice,k_depth\n";
     out << std::fixed << std::setprecision(4);
     for (const auto& r : records)
         out << r.id << "," << r.center.x << "," << r.center.y
             << "," << r.area << "," << r.perimeter
             << "," << r.degree << "," << r.choice
-            << "," << r.dChoice << "," << r.aChoice << "\n";
+            << "," << r.dChoice << "," << r.aChoice
+            << "," << r.kDepth << "\n";
 
     std::cout << "Exported CSV (" << records.size() << " rows) to: " << outputPath << "\n";
 }
@@ -73,13 +74,22 @@ void MetricsExporter::exportAChoiceHeatmap(const std::string& inputSVGPath,
     exportHeatmap(inputSVGPath, outputPath, records, Metric::AChoice, dotRadius);
 }
 
+void MetricsExporter::exportKDepthHeatmap(const std::string& inputSVGPath,
+                                           const std::string& outputPath,
+                                           const std::vector<IsovistRecord>& records,
+                                           double dotRadius,
+                                           int highlightNode) const {
+    exportHeatmap(inputSVGPath, outputPath, records, Metric::KDepth, dotRadius, highlightNode);
+}
+
 // ---- Shared heatmap implementation ----
 
 void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
                                      const std::string& outputPath,
                                      const std::vector<IsovistRecord>& records,
                                      Metric metric,
-                                     double dotRadius) const {
+                                     double dotRadius,
+                                     int highlightNode) const {
     if (records.empty()) return;
 
     auto getValue = [&](const IsovistRecord& r) -> double {
@@ -90,6 +100,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
             case Metric::Choice:    return r.choice;
             case Metric::DChoice:   return r.dChoice;
             case Metric::AChoice:   return r.aChoice;
+            case Metric::KDepth:    return r.kDepth;
         }
         return 0.0;
     };
@@ -126,6 +137,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
         case Metric::Choice:    groupId = "heatmap_choice";    break;
         case Metric::DChoice:   groupId = "heatmap_d_choice";  break;
         case Metric::AChoice:   groupId = "heatmap_a_choice";  break;
+        case Metric::KDepth:    groupId = "heatmap_k_depth";   break;
     }
 
     pugi::xml_node group = svgNode.append_child("g");
@@ -138,12 +150,15 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
     };
 
     for (const auto& r : records) {
-        std::string color = valueToColor(display(getValue(r)), minVal, maxVal, m_flip);
+        bool highlighted = (r.id == highlightNode);
+        std::string color = highlighted
+            ? "#ff00ff"
+            : valueToColor(display(getValue(r)), minVal, maxVal, m_flip);
 
         pugi::xml_node circle = group.append_child("circle");
         circle.append_attribute("cx")   = fmt(r.center.x).c_str();
         circle.append_attribute("cy")   = fmt(r.center.y).c_str();
-        circle.append_attribute("r")    = dotRadius;
+        circle.append_attribute("r")    = highlighted ? dotRadius * 1.5 : dotRadius;
         circle.append_attribute("fill") = color.c_str();
     }
 
@@ -158,6 +173,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
         case Metric::Choice:    metricName = "choice";    break;
         case Metric::DChoice:   metricName = "d-choice";  break;
         case Metric::AChoice:   metricName = "a-choice";  break;
+        case Metric::KDepth:    metricName = "k-path-depth"; break;
     }
     std::cout << "Exported " << metricName << " heatmap to: " << outputPath
               << "  (range " << fmt(minVal) << " – " << fmt(maxVal) << ")\n";

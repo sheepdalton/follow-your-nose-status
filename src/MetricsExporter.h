@@ -47,8 +47,16 @@ public:
                               const std::vector<IsovistRecord>& records,
                               double dotRadius = 5.0) const;
 
+    // Exports the original SVG with isovist centers coloured by k-path depth.
+    // highlightNode (the common destination) is drawn in magenta.
+    void exportKDepthHeatmap(const std::string& inputSVGPath,
+                             const std::string& outputPath,
+                             const std::vector<IsovistRecord>& records,
+                             double dotRadius = 5.0,
+                             int highlightNode = -1) const;
+
 private:
-    enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice };
+    enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice, KDepth };
     bool m_flip = false;
     bool m_log  = false;
 
@@ -56,5 +64,6 @@ private:
                        const std::string& outputPath,
                        const std::vector<IsovistRecord>& records,
                        Metric metric,
-                       double dotRadius) const;
+                       double dotRadius,
+                       int highlightNode = -1) const;
 };

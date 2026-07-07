@@ -32,6 +32,10 @@ static void printUsage(const std::string& prog) {
               << "  --vis-graph        draw all visibility graph edges as grey lines\n"
               << "  --vis-nose-single  Nose Integration single path SVG\n"
               << "  --ODseed <O> <D>   origin and dest node IDs for nose (default: random)\n"
+              << "  --vis-k-paths      K noisy walks (k-ways) on one map SVG\n"
+              << "  --vis-k-path-depth colour all nodes by k-walk angular depth to one dest\n"
+              << "  --K <k>            number of walks               (default: 7)\n"
+              << "  --sigma <sx> <sy>  Gaussian spread of perceived dest (default: 7 7)\n"
               << "  --SIZE <r>        override automatic dot radius\n"
               << "  --LOG             apply natural log to metric before colour mapping\n"
               << "  --FLIP            reverse colour spectrum (blue=low, red=high)\n";
@@ -54,8 +58,14 @@ int main(int argc, char* argv[]) {
     bool         doVisConnects  = false;
     bool         doVisGraph     = false;
     bool         doVisNose      = false;
+    bool         doVisKPaths    = false;
+    bool         doVisKDepth    = false;
     int          noseOrigin     = -1;
     int          noseDest       = -1;
+    int          kWays          = 7;
+    double       sigmaX         = 7.0;
+    double       sigmaY         = 7.0;
+    int          kDepthDest     = -1;   // resolved destination for k-path-depth
     int          aChoiceOrigin  = -1;
     int          aChoiceDest    = -1;
     bool         doFlip         = false;
@@ -79,6 +89,11 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-connections")         { doVisConnects = true; }
         else if (arg == "--vis-graph")               { doVisGraph    = true; }
         else if (arg == "--vis-nose-single")         { doVisNose     = true; }
+        else if (arg == "--vis-k-paths")             { doVisKPaths   = true; }
+        else if (arg == "--vis-k-path-depth")        { doVisKDepth   = true; }
+        else if (arg == "--K"     && i+1<argc)       { kWays  = std::stoi(argv[++i]); }
+        else if (arg == "--sigma" && i+2<argc)       { sigmaX = std::stod(argv[++i]);
+                                                       sigmaY = std::stod(argv[++i]); }
         else if (arg == "--ODseed" && i+2<argc)      { noseOrigin = std::stoi(argv[++i]);
                                                        noseDest   = std::stoi(argv[++i]); }
         else if (arg == "--FLIP")                    { doFlip        = true; }
@@ -116,8 +131,8 @@ int main(int argc, char* argv[]) {
         svgExp.exportSVG(inputPath, (outDir / (stem + ".svg")).string(), centers, dotRadius);
 
         // ---- compute all visibility polygons ----
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisKPaths || doVisKDepth;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisKPaths || doVisKDepth;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
@@ -165,6 +180,28 @@ int main(int argc, char* argv[]) {
                     for (int i = 0; i < n; ++i)
                         records[i].aChoice = ac[i];
                 }
+                if (doVisKDepth) {
+                    // Common destination: --DEST if given, else random
+                    int dst;
+                    if (aChoiceDest >= 0 && aChoiceDest < n) {
+                        dst = aChoiceDest;
+                    } else {
+                        std::mt19937 rng(seed);
+                        std::uniform_int_distribution<int> dist(0, n - 1);
+                        dst = dist(rng);
+                    }
+                    kDepthDest = dst;
+
+                    std::cout << "K-path depth: dest=" << dst
+                              << "  K=" << kWays
+                              << "  sigma=(" << sigmaX << ", " << sigmaY << ")\n";
+
+                    std::vector<double> kd = graph->computeKPathDepth(dst, kWays,
+                                                                      sigmaX, sigmaY,
+                                                                      seed, centers);
+                    for (int i = 0; i < n; ++i)
+                        records[i].kDepth = kd[i];
+                }
             }
 
             MetricsExporter metricsExp;
@@ -194,6 +231,12 @@ int main(int argc, char* argv[]) {
             if (doVisDChoice) {
                 fs::path p = outDir / (stem + "-d-choice-" + nStr + ".svg");
                 metricsExp.exportDChoiceHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doVisKDepth) {
+                fs::path p = outDir / (stem + "-k-path-depth-" + nStr + ".svg");
+                metricsExp.exportKDepthHeatmap(inputPath, p.string(), records, dotRadius,
+                                               kDepthDest);
+                std::cout << "K-path depth destination node: " << kDepthDest << "\n";
             }
             if (doVisAChoice) {
                 bool hasSinglePair = (aChoiceOrigin >= 0 && aChoiceOrigin < n &&
@@ -306,6 +349,42 @@ int main(int argc, char* argv[]) {
                     svgExp.exportNosePath(inputPath, p.string(), centers,
                                           nose, ori, dst, dotRadius);
                 }
+            }
+            if (doVisKPaths) {
+                // Pick O and D: use --ODseed values or fall back to random
+                int ori, dst;
+                if (noseOrigin >= 0 && noseOrigin < n &&
+                    noseDest   >= 0 && noseDest   < n) {
+                    ori = noseOrigin;
+                    dst = noseDest;
+                } else {
+                    std::mt19937 rng(seed);
+                    std::uniform_int_distribution<int> dist(0, n - 1);
+                    ori = dist(rng);
+                    do { dst = dist(rng); } while (dst == ori);
+                }
+
+                std::cout << "K-ways: origin=" << ori << "  dest=" << dst
+                          << "  K=" << kWays
+                          << "  sigma=(" << sigmaX << ", " << sigmaY << ")\n";
+
+                KWalksResult kw = graph->computeKWalks(ori, dst, kWays,
+                                                       sigmaX, sigmaY, seed, centers);
+
+                for (size_t k = 0; k < kw.walks.size(); ++k) {
+                    const auto& w = kw.walks[k];
+                    bool reached = !w.path.empty() && w.path.back() == dst;
+                    std::cout << "  walk " << k << ": "
+                              << (w.path.size() - 1) << " steps, depth "
+                              << std::fixed << std::setprecision(3) << w.totalDepth
+                              << (reached ? "" : "  (FAILED to reach dest)") << "\n";
+                }
+                std::cout << "Max perceived-destination spread: "
+                          << std::setprecision(1) << kw.maxSpread << "\n";
+
+                fs::path p = outDir / (stem + "-k-paths-" + nStr + ".svg");
+                svgExp.exportKPaths(inputPath, p.string(), centers, kw.walks,
+                                    ori, dst, kw.maxSpread, dotRadius);
             }
         }
 

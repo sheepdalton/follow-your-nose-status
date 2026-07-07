@@ -45,6 +45,17 @@ public:
                      const std::vector<std::vector<int>>& adj,
                      double dotRadius = 3.0);
 
+    // Draws K noisy walks on one map, each walk in its own SVG layer (<g>),
+    // plus an empty red circle at the destination enclosing all sampled
+    // perceived-destination points.
+    void exportKPaths(const std::string& inputPath,
+                      const std::string& outputPath,
+                      const std::vector<Point>& centers,
+                      const std::vector<NoseResult>& walks,
+                      int origin, int dest,
+                      double spreadRadius,
+                      double dotRadius = 3.0);
+
     // Draws the Nose Integration single path: edges coloured by depth cost,
     // text label on each edge showing the depth value.
     void exportNosePath(const std::string& inputPath,

@@ -8,6 +8,7 @@
 #include <limits>
 #include <algorithm>
 #include <map>
+#include <random>
 
 VisibilityGraph::VisibilityGraph(int n) : m_n(n), m_adj(n) {}
 
@@ -394,6 +395,155 @@ NoseResult VisibilityGraph::computeNosePath(int origin, int dest,
     }
 
     return result;
+}
+
+// One noisy greedy walk.
+//
+// A sequential greedy navigation, not a global Dijkstra: the walker only
+// ever knows an imperfect (noisy) direction to the destination, re-sampled
+// at every intermediate node.  This simulates poor direction finding.
+// The walk ends when the true destination is directly visible (final step
+// always correct) or after a safety cap of 4*N steps (walk failed).
+NoseResult VisibilityGraph::walkOnce(int origin, int dest,
+                                      double sigmaX, double sigmaY,
+                                      std::mt19937& rng,
+                                      const std::vector<Point>& centers,
+                                      std::vector<Point>* samples,
+                                      double* maxSpread) const {
+    std::normal_distribution<double> noiseX(0.0, sigmaX);
+    std::normal_distribution<double> noiseY(0.0, sigmaY);
+
+    // Angular cost (units of 90 deg) between vector A→target and edge A→B.
+    auto edgeCost = [&](int A, int B, const Point& target) -> double {
+        double dx = target.x - centers[A].x;
+        double dy = target.y - centers[A].y;
+        double ex = centers[B].x - centers[A].x;
+        double ey = centers[B].y - centers[A].y;
+        double magD = std::sqrt(dx*dx + dy*dy);
+        double magE = std::sqrt(ex*ex + ey*ey);
+        if (magD < 1e-12 || magE < 1e-12) return 0.0;
+        double cosT = (dx*ex + dy*ey) / (magD * magE);
+        cosT = std::max(-1.0, std::min(1.0, cosT));
+        return std::acos(cosT) * (180.0 / M_PI) / 90.0;
+    };
+
+    auto seesDest = [&](int node) {
+        const auto& nb = m_adj[node];
+        return std::find(nb.begin(), nb.end(), dest) != nb.end();
+    };
+
+    const int MAX_STEPS = 4 * m_n;
+
+    NoseResult walk;
+    walk.totalDepth = 0.0;
+    int cur = origin;
+    walk.path.push_back(cur);
+
+    for (int step = 0; step < MAX_STEPS && cur != dest; ++step) {
+        if (seesDest(cur)) {
+            // Final step: destination visible, taken exactly (cost 0).
+            double c = edgeCost(cur, dest, centers[dest]);
+            walk.edgeCosts.push_back(c);
+            walk.totalDepth += c;
+            cur = dest;
+            walk.path.push_back(cur);
+            break;
+        }
+
+        // Perceived destination = true centre + Gaussian error.
+        Point perceived(centers[dest].x + noiseX(rng),
+                        centers[dest].y + noiseY(rng));
+        if (samples) samples->push_back(perceived);
+        if (maxSpread) {
+            double sx = perceived.x - centers[dest].x;
+            double sy = perceived.y - centers[dest].y;
+            *maxSpread = std::max(*maxSpread, std::sqrt(sx*sx + sy*sy));
+        }
+
+        // Greedy: edge deviating least from the perceived direction.
+        int    best     = -1;
+        double bestCost = std::numeric_limits<double>::infinity();
+        for (int nb : m_adj[cur]) {
+            double c = edgeCost(cur, nb, perceived);
+            if (c < bestCost) { bestCost = c; best = nb; }
+        }
+        if (best < 0) break;   // isolated node — give up
+
+        walk.edgeCosts.push_back(bestCost);
+        walk.totalDepth += bestCost;
+        cur = best;
+        walk.path.push_back(cur);
+    }
+
+    return walk;
+}
+
+// Retry limit: a walk that fails to arrive is discarded and re-run with
+// fresh randomness.  This cap only exists so an unreachable destination
+// cannot hang the program.
+static const int K_WALK_MAX_RETRIES = 100;
+
+KWalksResult VisibilityGraph::computeKWalks(int origin, int dest, int K,
+                                             double sigmaX, double sigmaY, unsigned seed,
+                                             const std::vector<Point>& centers) const {
+    KWalksResult result;
+    std::mt19937 rng(seed);
+
+    for (int k = 0; k < K; ++k) {
+        NoseResult walk;
+        for (int attempt = 0; attempt < K_WALK_MAX_RETRIES; ++attempt) {
+            walk = walkOnce(origin, dest, sigmaX, sigmaY, rng, centers,
+                            &result.samples, &result.maxSpread);
+            if (!walk.path.empty() && walk.path.back() == dest) break;
+            // failed — reset and start again
+        }
+        result.walks.push_back(std::move(walk));
+    }
+
+    return result;
+}
+
+// K-path depth: sum of angular depth over K completed walks, for every
+// origin node, toward one common destination.
+std::vector<double> VisibilityGraph::computeKPathDepth(int dest, int K,
+                                                        double sigmaX, double sigmaY,
+                                                        unsigned seed,
+                                                        const std::vector<Point>& centers) const {
+    std::vector<double> depth(m_n, 0.0);
+    int failedWalks = 0;
+
+    std::cout << "Computing k-path depth (dest=" << dest << ", K=" << K << ")...\n";
+
+    for (int o = 0; o < m_n; ++o) {
+        if (o == dest) continue;
+
+        // Per-origin seed so results don't depend on iteration order.
+        std::mt19937 rng(seed + static_cast<unsigned>(o));
+
+        double sum = 0.0;
+        for (int k = 0; k < K; ++k) {
+            NoseResult walk;
+            bool ok = false;
+            for (int attempt = 0; attempt < K_WALK_MAX_RETRIES; ++attempt) {
+                walk = walkOnce(o, dest, sigmaX, sigmaY, rng, centers,
+                                nullptr, nullptr);
+                if (!walk.path.empty() && walk.path.back() == dest) { ok = true; break; }
+            }
+            if (!ok) ++failedWalks;
+            sum += walk.totalDepth;
+        }
+        depth[o] = sum;
+
+        if ((o + 1) % 50 == 0)
+            std::cout << "  " << (o+1) << " / " << m_n << " origins done\n";
+    }
+
+    if (failedWalks > 0)
+        std::cerr << "WARNING: " << failedWalks << " walks never reached the "
+                  << "destination even after " << K_WALK_MAX_RETRIES << " retries\n";
+
+    std::cout << "K-path depth complete.\n";
+    return depth;
 }
 
 // Full A-choice accumulation.

@@ -105,6 +105,117 @@ void SVGExporter::exportExperiment(const std::string& inputPath,
               << " isovist polygons to: " << outputPath << "\n";
 }
 
+void SVGExporter::exportKPaths(const std::string& inputPath,
+                                const std::string& outputPath,
+                                const std::vector<Point>& centers,
+                                const std::vector<NoseResult>& walks,
+                                int origin, int dest,
+                                double spreadRadius,
+                                double dotRadius) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(inputPath.c_str());
+    if (!result)
+        throw std::runtime_error("SVGExporter::exportKPaths: " + std::string(result.description()));
+
+    pugi::xml_node svgNode = doc.child("svg");
+    if (!svgNode)
+        throw std::runtime_error("SVGExporter::exportKPaths: no <svg> root.");
+
+    auto fmt = [](double v) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3) << v;
+        return ss.str();
+    };
+
+    const std::vector<std::string> palette = {
+        "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
+        "#ff7f00", "#a65628", "#f781bf"
+    };
+
+    pugi::xml_node group = svgNode.append_child("g");
+    group.append_attribute("id") = "k_paths";
+
+    // All centres: small grey dots
+    pugi::xml_node gDots = group.append_child("g");
+    gDots.append_attribute("id") = "all_centers";
+    for (const auto& p : centers) {
+        pugi::xml_node c = gDots.append_child("circle");
+        c.append_attribute("cx")   = fmt(p.x).c_str();
+        c.append_attribute("cy")   = fmt(p.y).c_str();
+        c.append_attribute("r")    = dotRadius;
+        c.append_attribute("fill") = "#aaaaaa";
+    }
+
+    // One layer per walk
+    for (size_t k = 0; k < walks.size(); ++k) {
+        const auto& path  = walks[k].path;
+        const auto& color = palette[k % palette.size()];
+
+        std::ostringstream layerId;
+        layerId << "k_path_" << k;
+        pugi::xml_node layer = group.append_child("g");
+        layer.append_attribute("id")           = layerId.str().c_str();
+        layer.append_attribute("stroke")       = color.c_str();
+        layer.append_attribute("stroke-width") = "1.5";
+        layer.append_attribute("opacity")      = "0.65";
+        layer.append_attribute("fill")         = "none";
+
+        if (path.size() >= 2) {
+            std::ostringstream pts;
+            for (int id : path)
+                pts << fmt(centers[id].x) << "," << fmt(centers[id].y) << " ";
+            pugi::xml_node pl = layer.append_child("polyline");
+            pl.append_attribute("points") = pts.str().c_str();
+        }
+
+        // Small dots on the walk's intermediate nodes, same colour
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            const Point& p = centers[path[i]];
+            pugi::xml_node c = layer.append_child("circle");
+            c.append_attribute("cx")   = fmt(p.x).c_str();
+            c.append_attribute("cy")   = fmt(p.y).c_str();
+            c.append_attribute("r")    = dotRadius * 0.8;
+            c.append_attribute("fill") = color.c_str();
+        }
+    }
+
+    // Empty red circle enclosing all sampled perceived destinations
+    if (spreadRadius > 0.0) {
+        pugi::xml_node circ = group.append_child("circle");
+        circ.append_attribute("cx")           = fmt(centers[dest].x).c_str();
+        circ.append_attribute("cy")           = fmt(centers[dest].y).c_str();
+        circ.append_attribute("r")            = fmt(spreadRadius).c_str();
+        circ.append_attribute("fill")         = "none";
+        circ.append_attribute("stroke")       = "#e31a1c";
+        circ.append_attribute("stroke-width") = "1.0";
+    }
+
+    // Origin: green
+    {
+        const Point& p = centers[origin];
+        pugi::xml_node c = group.append_child("circle");
+        c.append_attribute("cx")   = fmt(p.x).c_str();
+        c.append_attribute("cy")   = fmt(p.y).c_str();
+        c.append_attribute("r")    = dotRadius * 2.0;
+        c.append_attribute("fill") = "#33a02c";
+    }
+
+    // Destination: red
+    {
+        const Point& p = centers[dest];
+        pugi::xml_node c = group.append_child("circle");
+        c.append_attribute("cx")   = fmt(p.x).c_str();
+        c.append_attribute("cy")   = fmt(p.y).c_str();
+        c.append_attribute("r")    = dotRadius * 2.0;
+        c.append_attribute("fill") = "#e31a1c";
+    }
+
+    if (!doc.save_file(outputPath.c_str()))
+        throw std::runtime_error("SVGExporter::exportKPaths: failed to write: " + outputPath);
+
+    std::cout << "Exported " << walks.size() << " k-ways walks to: " << outputPath << "\n";
+}
+
 void SVGExporter::exportNosePath(const std::string& inputPath,
                                   const std::string& outputPath,
                                   const std::vector<Point>& centers,

@@ -2,12 +2,20 @@
 #include "Point.h"
 #include "Polygon.h"
 #include <vector>
+#include <random>
 
 // Result of a Nose Integration single-path query.
 struct NoseResult {
     std::vector<int>    path;       // node indices from origin to dest
     std::vector<double> edgeCosts;  // cost of each step = angle(node→D, edge) / 90°
     double              totalDepth; // sum of edge costs
+};
+
+// Result of K noisy walks (k-ways experiment).
+struct KWalksResult {
+    std::vector<NoseResult> walks;       // one walk per repetition
+    std::vector<Point>      samples;     // every perceived destination sampled
+    double                  maxSpread = 0.0; // max distance of any sample from true dest
 };
 
 // Result of the angular (A-choice) shortest path query.
@@ -57,6 +65,23 @@ public:
     NoseResult computeNosePath(int origin, int dest,
                                const std::vector<Point>& centers) const;
 
+    // K-ways: simulate K greedy "follow your nose" walks from origin to dest.
+    // At each intermediate node the perceived destination is re-sampled from a
+    // 2D Gaussian centred on the true destination (sigmaX, sigmaY); the walker
+    // takes the edge that deviates least from the perceived direction.
+    // When the true destination is directly visible the final step is exact.
+    KWalksResult computeKWalks(int origin, int dest, int K,
+                               double sigmaX, double sigmaY, unsigned seed,
+                               const std::vector<Point>& centers) const;
+
+    // K-path depth: for a fixed destination, every other node acts as an
+    // origin; its value is the sum of total angular depth over K completed
+    // noisy walks to the destination (failed walks are reset and re-run).
+    std::vector<double> computeKPathDepth(int dest, int K,
+                                          double sigmaX, double sigmaY,
+                                          unsigned seed,
+                                          const std::vector<Point>& centers) const;
+
     // Full A-choice accumulation: runs angular Dijkstra from every source,
     // traces back the least-turn path to every destination, and accumulates
     // 1.0 on each intermediate node.  Produces a heatmap metric analogous
@@ -67,4 +92,14 @@ private:
     int m_n;
     int m_edgeCount = 0;
     std::vector<std::vector<int>> m_adj;
+
+    // One noisy greedy walk from origin toward dest.  Every sampled perceived
+    // destination is appended to *samples (if non-null) and *maxSpread updated.
+    // Failure to arrive is detectable by path.back() != dest.
+    NoseResult walkOnce(int origin, int dest,
+                        double sigmaX, double sigmaY,
+                        std::mt19937& rng,
+                        const std::vector<Point>& centers,
+                        std::vector<Point>* samples,
+                        double* maxSpread) const;
 };
