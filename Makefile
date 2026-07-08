@@ -10,6 +10,7 @@ SRCS = src/main.cpp \
        src/VisibilityGraph.cpp \
        src/SVGExporter.cpp \
        src/MetricsExporter.cpp \
+       src/Gates.cpp \
        vendor/pugixml.cpp
 
 TARGET = isovist

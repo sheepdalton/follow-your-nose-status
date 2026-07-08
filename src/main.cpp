@@ -1,4 +1,5 @@
 #include "SVGParser.h"
+#include "Gates.h"
 #include "IsovistPlacer.h"
 #include "IsovistComputer.h"
 #include "IsovistRecord.h"
@@ -31,8 +32,16 @@ static void printUsage(const std::string& prog) {
               << "  --DEST <id>       dest   node for a-choice  (default: n-1)\n"
               << "  --vis-graph        draw all visibility graph edges as grey lines\n"
               << "  --vis-nose-single  Nose Integration single path SVG\n"
+              << "  --vis-polar-single polar (angle x distance) single path SVG\n"
+              << "  --vis-polar-status-angle    heatmap: sum of angle costs of all polar routes here\n"
+              << "  --vis-polar-status-product  heatmap: sum of angle x distance costs of all polar routes here\n"
+              << "  --vis-topo-status  heatmap: total topological depth (integration)\n"
+              << "  --gates <file>     match gate-count CSV (label,x,y,count) to isovists;\n"
+              << "                     writes <stem>-gate-counts.csv with all measures\n"
+              << "  --MAX-GATE-RADIUS <r>  max gate-to-isovist match distance (default: 50)\n"
+              << "  --HEAL             on a disconnected graph, grow n by (islands+1) and retry\n"
               << "  --ODseed <O> <D>   origin and dest node IDs for nose (default: random)\n"
-              << "  --SIZE <r>        override automatic dot radius\n"
+              << "  --SIZE <r>        override dot radius (default: 3)\n"
               << "  --LOG             apply natural log to metric before colour mapping\n"
               << "  --FLIP            reverse colour spectrum (blue=low, red=high)\n";
 }
@@ -54,6 +63,13 @@ int main(int argc, char* argv[]) {
     bool         doVisConnects  = false;
     bool         doVisGraph     = false;
     bool         doVisNose      = false;
+    bool         doVisPolar     = false;
+    bool         doVisPolarStatusAngle   = false;
+    bool         doVisPolarStatusProduct = false;
+    bool         doVisTopoStatus         = false;
+    std::string  gatesFile;
+    double       maxGateRadius  = 50.0;
+    bool         doHeal         = false;
     int          noseOrigin     = -1;
     int          noseDest       = -1;
     int          aChoiceOrigin  = -1;
@@ -79,6 +95,13 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-connections")         { doVisConnects = true; }
         else if (arg == "--vis-graph")               { doVisGraph    = true; }
         else if (arg == "--vis-nose-single")         { doVisNose     = true; }
+        else if (arg == "--vis-polar-single")        { doVisPolar    = true; }
+        else if (arg == "--vis-polar-status-angle")  { doVisPolarStatusAngle   = true; }
+        else if (arg == "--vis-polar-status-product"){ doVisPolarStatusProduct = true; }
+        else if (arg == "--vis-topo-status")         { doVisTopoStatus         = true; }
+        else if (arg == "--gates" && i+1<argc)       { gatesFile     = argv[++i]; }
+        else if (arg == "--MAX-GATE-RADIUS" && i+1<argc) { maxGateRadius = std::stod(argv[++i]); }
+        else if (arg == "--HEAL")                    { doHeal        = true; }
         else if (arg == "--ODseed" && i+2<argc)      { noseOrigin = std::stoi(argv[++i]);
                                                        noseDest   = std::stoi(argv[++i]); }
         else if (arg == "--FLIP")                    { doFlip        = true; }
@@ -108,51 +131,98 @@ int main(int argc, char* argv[]) {
         IsovistPlacer placer(fp, n, candidates, seed);
         std::vector<Point> centers = placer.place();
 
-        double dotRadius = (sizeOverride > 0.0) ? sizeOverride
-                                                 : SVGExporter::computeDotRadius(fp.openArea(), n);
+        double dotRadius = (sizeOverride > 0.0) ? sizeOverride : 3.0;
         std::cout << "Open area: " << fp.openArea() << "  dot radius: " << dotRadius << "\n";
 
         SVGExporter svgExp;
         svgExp.exportSVG(inputPath, (outDir / (stem + ".svg")).string(), centers, dotRadius);
 
         // ---- compute all visibility polygons ----
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose;
+        bool doGates       = !gatesFile.empty();
+        bool doPolarStatus = doVisPolarStatusAngle || doVisPolarStatusProduct;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doPolarStatus || doVisTopoStatus || doGates;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doPolarStatus || doVisTopoStatus || doGates;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
 
         if (needMetrics) {
-            std::cout << "Computing " << n << " visibility polygons...\n";
             IsovistComputer computer;
-            records.reserve(n);
-            if (needGraph) polygons.reserve(n);
-
-            for (int i = 0; i < n; ++i) {
-                Polygon vis = computer.compute(centers[i], fp);
-                records.push_back({i, centers[i], vis.area(), vis.perimeter(), 0});
-                if (needGraph) polygons.push_back(vis);
-                if ((i + 1) % 50 == 0)
-                    std::cout << "  " << (i+1) << " / " << n << " done\n";
-            }
-
-            // ---- build visibility graph (if requested) ----
             std::unique_ptr<VisibilityGraph> graph;
-            if (needGraph) {
+
+            // Compute all polygons and (if needed) the visibility graph.
+            // With --HEAL a disconnected graph grows n by (islands + 1),
+            // re-places all centres and restarts until fully connected.
+            const int MAX_HEAL_ROUNDS = 100;
+            int healRound = 0;
+            while (true) {
+                std::cout << "Computing " << n << " visibility polygons...\n";
+                records.clear();
+                polygons.clear();
+                records.reserve(n);
+                if (needGraph) polygons.reserve(n);
+
+                for (int i = 0; i < n; ++i) {
+                    Polygon vis = computer.compute(centers[i], fp);
+                    records.push_back({i, centers[i], vis.area(), vis.perimeter(), 0});
+                    if (needGraph) polygons.push_back(vis);
+                    if ((i + 1) % 50 == 0)
+                        std::cout << "  " << (i+1) << " / " << n << " done\n";
+                }
+
+                if (!needGraph) break;
+
                 graph = std::make_unique<VisibilityGraph>(n);
                 graph->build(polygons, centers);
                 polygons.clear();
                 polygons.shrink_to_fit();
 
+                std::vector<int> comps = graph->componentSizes();
+                if (comps.size() == 1) break;   // fully connected
+
+                if (!doHeal) {
+                    std::cerr << "\nERROR: the visibility graph is NOT fully connected.\n"
+                              << "  " << comps.size() << " components; largest has "
+                              << comps[0] << " of " << n << " nodes.\n"
+                              << "  Graph measures would be meaningless across components.\n"
+                              << "  Increase the resolution (--n), change --seed, or use --HEAL.\n";
+                    return 1;
+                }
+
+                if (++healRound > MAX_HEAL_ROUNDS) {
+                    std::cerr << "\nERROR: --HEAL gave up after " << MAX_HEAL_ROUNDS
+                              << " rounds (still " << comps.size()
+                              << " islands at n=" << n << ").\n"
+                              << "  The open space itself may be disconnected.\n";
+                    return 1;
+                }
+
+                int add = static_cast<int>(comps.size()) + 1;
+                std::cout << "HEAL: " << comps.size() << " islands -> adding " << add
+                          << " isovists (n = " << n << " -> " << (n + add)
+                          << ") and restarting\n";
+                n += add;
+                nStr = std::to_string(n);
+
+                // Same seed: the placer regenerates the original centres and
+                // extends the Mitchell sequence with the extra points.
+                IsovistPlacer healPlacer(fp, n, candidates, seed);
+                centers = healPlacer.place();
+                svgExp.exportSVG(inputPath, (outDir / (stem + ".svg")).string(),
+                                 centers, dotRadius);
+            }
+
+            // ---- graph-derived measures ----
+            if (needGraph) {
                 for (int i = 0; i < n; ++i)
                     records[i].degree = graph->degree(i);
 
-                if (doVisChoice) {
+                if (doVisChoice || doGates) {
                     std::vector<double> choice = graph->computeChoice();
                     for (int i = 0; i < n; ++i)
                         records[i].choice = choice[i];
                 }
-                if (doVisDChoice) {
+                if (doVisDChoice || doGates) {
                     std::vector<double> dc = graph->computeDChoice();
                     for (int i = 0; i < n; ++i)
                         records[i].dChoice = dc[i];
@@ -160,10 +230,23 @@ int main(int argc, char* argv[]) {
                 bool aChoiceFullAccum = doVisAChoice &&
                                         !(aChoiceOrigin >= 0 && aChoiceOrigin < n &&
                                           aChoiceDest   >= 0 && aChoiceDest   < n);
-                if (aChoiceFullAccum) {
+                if (aChoiceFullAccum || doGates) {
                     std::vector<double> ac = graph->computeAChoice(centers);
                     for (int i = 0; i < n; ++i)
                         records[i].aChoice = ac[i];
+                }
+                if (doPolarStatus || doGates) {
+                    std::vector<double> psa, psp;
+                    graph->computePolarStatus(centers, psa, psp);
+                    for (int i = 0; i < n; ++i) {
+                        records[i].polarStatusAngle   = psa[i];
+                        records[i].polarStatusProduct = psp[i];
+                    }
+                }
+                if (doVisTopoStatus || doGates || doCSV) {
+                    std::vector<double> ts = graph->computeTopoStatus();
+                    for (int i = 0; i < n; ++i)
+                        records[i].topoStatus = ts[i];
                 }
             }
 
@@ -194,6 +277,50 @@ int main(int argc, char* argv[]) {
             if (doVisDChoice) {
                 fs::path p = outDir / (stem + "-d-choice-" + nStr + ".svg");
                 metricsExp.exportDChoiceHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doVisPolarStatusAngle) {
+                fs::path p = outDir / (stem + "-polar-status-angle-" + nStr + ".svg");
+                metricsExp.exportPolarStatusAngleHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doVisPolarStatusProduct) {
+                fs::path p = outDir / (stem + "-polar-status-product-" + nStr + ".svg");
+                metricsExp.exportPolarStatusProductHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doVisTopoStatus) {
+                fs::path p = outDir / (stem + "-topo-status-" + nStr + ".svg");
+                metricsExp.exportTopoStatusHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doGates) {
+                std::vector<Gate> gates = GateFile::load(gatesFile);
+                std::cout << "Loaded " << gates.size() << " gates from: " << gatesFile << "\n";
+
+                // Match each gate to the nearest isovist centre within radius
+                std::vector<int> matched(gates.size(), -1);
+                int unmatched = 0;
+                for (size_t g = 0; g < gates.size(); ++g) {
+                    Point gp(gates[g].x, gates[g].y);
+                    double best = maxGateRadius;
+                    for (int i = 0; i < n; ++i) {
+                        double d = centers[i].distanceTo(gp);
+                        if (d <= best) { best = d; matched[g] = i; }
+                    }
+                    if (matched[g] < 0) {
+                        ++unmatched;
+                        std::cerr << "WARNING: gate '" << gates[g].label
+                                  << "' has no isovist within " << maxGateRadius
+                                  << " units\n";
+                    }
+                }
+                if (unmatched)
+                    std::cerr << unmatched << " of " << gates.size()
+                              << " gates unmatched\n";
+
+                fs::path csvP = outDir / (stem + "-gate-counts.csv");
+                metricsExp.exportGateCSV(gates, matched, records, csvP.string());
+
+                fs::path svgP = outDir / (stem + "-gates-" + nStr + ".svg");
+                svgExp.exportGates(inputPath, svgP.string(), centers,
+                                   gates, matched, dotRadius);
             }
             if (doVisAChoice) {
                 bool hasSinglePair = (aChoiceOrigin >= 0 && aChoiceOrigin < n &&
@@ -286,7 +413,8 @@ int main(int argc, char* argv[]) {
                         int id = nose.path[i];
                         std::cout << "  [" << i << "] node " << id
                                   << "  (" << std::fixed << std::setprecision(1)
-                                  << centers[id].x << ", " << centers[id].y << ")";
+                                  << centers[id].x << ", " << centers[id].y << ")"
+                                  << "  topo=" << nose.topoDepths[i];
                         if (i == 0)
                             std::cout << "  <-- origin";
                         else {
@@ -305,6 +433,62 @@ int main(int argc, char* argv[]) {
                     fs::path p = outDir / (stem + "-nose-" + nStr + ".svg");
                     svgExp.exportNosePath(inputPath, p.string(), centers,
                                           nose, ori, dst, dotRadius);
+
+                    // Debug: all nodes coloured by topological depth from dest
+                    fs::path pt = outDir / (stem + "-nose-topo-" + nStr + ".svg");
+                    svgExp.exportTopoDepth(inputPath, pt.string(), centers,
+                                           graph->computeTopoDepths(dst),
+                                           nose, ori, dst, dotRadius);
+                }
+            }
+            if (doVisPolar) {
+                // Pick O and D: use --ODseed values or fall back to random
+                int ori, dst;
+                if (noseOrigin >= 0 && noseOrigin < n &&
+                    noseDest   >= 0 && noseDest   < n) {
+                    ori = noseOrigin;
+                    dst = noseDest;
+                } else {
+                    std::mt19937 rng(seed);
+                    std::uniform_int_distribution<int> dist(0, n - 1);
+                    ori = dist(rng);
+                    do { dst = dist(rng); } while (dst == ori);
+                }
+
+                std::cout << "Polar path: origin=" << ori
+                          << "  dest=" << dst << "\n";
+
+                NoseResult polar = graph->computePolarPath(ori, dst, centers);
+
+                if (!polar.path.empty()) {
+                    std::cout << "Path (" << polar.path.size() << " nodes, "
+                              << polar.path.size()-1 << " steps):\n";
+                    for (int i = 0; i < (int)polar.path.size(); ++i) {
+                        int id = polar.path[i];
+                        std::cout << "  [" << i << "] node " << id
+                                  << "  (" << std::fixed << std::setprecision(1)
+                                  << centers[id].x << ", " << centers[id].y << ")"
+                                  << "  topo=" << polar.topoDepths[i];
+                        if (i == 0)
+                            std::cout << "  <-- origin";
+                        else {
+                            double cost = polar.edgeCosts[i-1];
+                            double len  = centers[id].distanceTo(centers[polar.path[i-1]]);
+                            double angleDeg = (len > 1e-12) ? (cost / len) * 90.0 : 0.0;
+                            std::cout << "  cost=" << std::setprecision(3) << cost
+                                      << "  dist=" << std::setprecision(1) << len
+                                      << "  angle=" << angleDeg << "deg";
+                            if (i == (int)polar.path.size()-1)
+                                std::cout << "  <-- dest";
+                        }
+                        std::cout << "\n";
+                    }
+                    std::cout << "Total polar cost: " << std::setprecision(3)
+                              << polar.totalDepth << "\n";
+
+                    fs::path p = outDir / (stem + "-polar-" + nStr + ".svg");
+                    svgExp.exportNosePath(inputPath, p.string(), centers,
+                                          polar, ori, dst, dotRadius, "polar");
                 }
             }
         }

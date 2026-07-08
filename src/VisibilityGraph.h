@@ -7,6 +7,7 @@
 struct NoseResult {
     std::vector<int>    path;       // node indices from origin to dest
     std::vector<double> edgeCosts;  // cost of each step = angle(node→D, edge) / 90°
+    std::vector<int>    topoDepths; // BFS hop-depth to dest of each path node
     double              totalDepth; // sum of edge costs
 };
 
@@ -35,6 +36,10 @@ public:
     int edgeCount()    const { return m_edgeCount; }
     const std::vector<std::vector<int>>& adjacency() const { return m_adj; }
 
+    // Sizes of the connected components, largest first.
+    // A fully connected graph returns a single entry equal to nodeCount().
+    std::vector<int> componentSizes() const;
+
     // Betweenness centrality via Brandes' algorithm.
     // For every ordered pair (s,t), each intermediate node on a shortest path
     // accumulates 1/k where k is the number of equal-length shortest paths.
@@ -56,6 +61,29 @@ public:
     // V (direction to D) is recomputed fresh at each node, not carried from O.
     NoseResult computeNosePath(int origin, int dest,
                                const std::vector<Point>& centers) const;
+
+    // BFS hop-depth of every node from dest (-1 = unreachable).
+    std::vector<int> computeTopoDepths(int dest) const;
+
+    // Topological status (space syntax total depth / integration):
+    // for each node, the sum of BFS hop-distances to every other node.
+    // Low = topologically integrated, high = segregated.
+    std::vector<double> computeTopoStatus() const;
+
+    // Polar path: like the nose path but the cost of edge A→B is
+    //   (angle(A→D, A→B) / 90°) × euclidean_distance(A, B)
+    // so the best candidate is both in the right direction AND close.
+    // No topological depth constraint — pure Dijkstra over all neighbours.
+    NoseResult computePolarPath(int origin, int dest,
+                                const std::vector<Point>& centers) const;
+
+    // Polar centrality status: for every destination D, sum over all
+    // origins O of (a) the cumulative angle and (b) the cumulative
+    // angle×distance product along the polar-optimal route O→D.
+    // Results are indexed by destination node.
+    void computePolarStatus(const std::vector<Point>& centers,
+                            std::vector<double>& statusAngle,
+                            std::vector<double>& statusProduct) const;
 
     // Full A-choice accumulation: runs angular Dijkstra from every source,
     // traces back the least-turn path to every destination, and accumulates
