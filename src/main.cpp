@@ -13,6 +13,7 @@
 #include <memory>
 #include <random>
 #include <cmath>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -197,7 +198,9 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
 
-                int add = static_cast<int>(comps.size()) + 1;
+                // Geometric growth: at least +25% per round (never less than
+                // islands+1) so sparse plans converge in a handful of rounds.
+                int add = std::max(static_cast<int>(comps.size()) + 1, n / 4);
                 std::cout << "HEAL: " << comps.size() << " islands -> adding " << add
                           << " isovists (n = " << n << " -> " << (n + add)
                           << ") and restarting\n";
