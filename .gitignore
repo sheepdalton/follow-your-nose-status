@@ -13,3 +13,4 @@ data/out/
 {nvm_path}/
 *.tar.gz
 *.idraw
+simplifySVG
