@@ -12,3 +12,4 @@ data/out/
 .DS_Store
 {nvm_path}/
 *.tar.gz
+*.idraw
