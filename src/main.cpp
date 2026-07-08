@@ -15,6 +15,8 @@
 #include <random>
 #include <cmath>
 #include <algorithm>
+#include <unordered_map>
+#include <limits>
 
 namespace fs = std::filesystem;
 
@@ -172,8 +174,9 @@ int main(int argc, char* argv[]) {
             std::unique_ptr<VisibilityGraph> graph;
 
             // Compute all polygons and (if needed) the visibility graph.
-            // With --HEAL a disconnected graph grows n by (islands + 1),
-            // re-places all centres and restarts until fully connected.
+            // With --HEAL a disconnected graph is repaired in-place by adding
+            // bridge points (kept only when they join islands); each round
+            // re-checks connectivity until one component remains.
             const int MAX_HEAL_ROUNDS = 100;
             int healRound = 0;
             while (true) {
@@ -227,41 +230,96 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
 
-                // Bridge-hunting heal: try random candidate points; keep a
-                // candidate only if it can see nodes of two or more different
-                // islands (it merges them).  Useless candidates are discarded,
-                // so the node count grows only by accepted bridges.
+                // Bridge-hunting heal: sample candidate points and keep one
+                // only if it sees nodes of two or more different islands (it
+                // merges them).  Candidates are drawn from a Gaussian centred
+                // on the SMALLEST remaining island — most of the map can never
+                // yield a bridge, so aiming at the offending cluster is far
+                // more efficient than sampling uniformly.  The spread widens
+                // adaptively if the tight search stalls, and falls back to a
+                // full-uniform search as a last resort, so it is never worse
+                // than the old uniform hunt.  Only accepted bridges are kept,
+                // so the node count grows minimally.
                 std::cout << "HEAL: " << comps.size()
-                          << " islands -> hunting bridge points...\n";
+                          << " islands -> hunting bridge points (targeted)...\n";
 
                 std::vector<int> labels = graph->componentLabels();
                 int islandCount = static_cast<int>(comps.size());
 
                 Polygon::BBox bbox = fp.boundingBox();
+                double maxDim   = std::max(bbox.maxX - bbox.minX,
+                                           bbox.maxY - bbox.minY);
+                double sigmaBase = 0.08 * maxDim;   // tight: hug the target island
+                double sigmaCap  = 0.20 * maxDim;   // broadest before uniform fallback
+
                 std::mt19937 rng(seed + 1000003u * static_cast<unsigned>(healRound));
                 std::uniform_real_distribution<double> rx(bbox.minX, bbox.maxX);
                 std::uniform_real_distribution<double> ry(bbox.minY, bbox.maxY);
 
-                const int MAX_BRIDGE_TRIES = 20000;  // consecutive failures
-                int fails    = 0;
-                int accepted = 0;
+                // Centre the Gaussian on a random real node of the smallest
+                // remaining island.  A real node is guaranteed to sit in valid
+                // open space, unlike a centroid that may fall inside a wall.
+                auto pickTargetCentre = [&](Point& out) {
+                    std::unordered_map<int,int> count;
+                    for (int l : labels) ++count[l];
+                    int bestLabel = labels[0];
+                    int bestCount = std::numeric_limits<int>::max();
+                    for (const auto& kv : count)
+                        if (kv.second < bestCount) { bestCount = kv.second; bestLabel = kv.first; }
+                    std::vector<int> members;
+                    for (int i = 0; i < (int)labels.size(); ++i)
+                        if (labels[i] == bestLabel) members.push_back(i);
+                    std::uniform_int_distribution<int> pick(0, (int)members.size() - 1);
+                    out = centers[members[pick(rng)]];
+                };
+
+                Point targetCentre;
+                pickTargetCentre(targetCentre);
+
+                const int MAX_BRIDGE_TRIES = 20000;  // consecutive fails -> give up
+                const int WIDEN_AFTER      = 400;    // fails at one spread before widening
+                double sigma       = sigmaBase;
+                int    fails       = 0;   // consecutive (governs give-up)
+                int    localFails  = 0;   // consecutive at current spread (governs widening)
+                int    accepted    = 0;
+                bool   uniformMode = false;
 
                 while (islandCount > 1 && fails < MAX_BRIDGE_TRIES) {
-                    Point cand(rx(rng), ry(rng));
-                    if (!fp.isValidPoint(cand)) { ++fails; continue; }
+                    Point cand;
+                    if (uniformMode) {
+                        cand = Point(rx(rng), ry(rng));
+                    } else {
+                        std::normal_distribution<double> gx(targetCentre.x, sigma);
+                        std::normal_distribution<double> gy(targetCentre.y, sigma);
+                        cand = Point(gx(rng), gy(rng));
+                    }
 
-                    // Which islands can this candidate see?  (Visibility is
-                    // symmetric: cand sees node j iff cand is inside j's
-                    // isovist polygon.)
+                    // Which islands does this candidate see?  (Visibility is
+                    // symmetric: cand sees node j iff cand is inside j's polygon.)
                     std::vector<int> seen;
-                    for (size_t j = 0; j < polygons.size(); ++j) {
-                        if (polygons[j].containsPoint(cand)) {
-                            int c = labels[j];
-                            if (std::find(seen.begin(), seen.end(), c) == seen.end())
-                                seen.push_back(c);
+                    if (fp.isValidPoint(cand)) {
+                        for (size_t j = 0; j < polygons.size(); ++j) {
+                            if (polygons[j].containsPoint(cand)) {
+                                int c = labels[j];
+                                if (std::find(seen.begin(), seen.end(), c) == seen.end())
+                                    seen.push_back(c);
+                            }
                         }
                     }
-                    if (seen.size() < 2) { ++fails; continue; }
+
+                    if (seen.size() < 2) {
+                        ++fails;
+                        if (++localFails >= WIDEN_AFTER) {
+                            localFails = 0;
+                            if (!uniformMode && sigma < sigmaCap) {
+                                sigma = std::min(sigma * 1.6, sigmaCap);
+                                pickTargetCentre(targetCentre);  // try a different node
+                            } else if (!uniformMode) {
+                                uniformMode = true;              // last resort: global search
+                            }
+                        }
+                        continue;
+                    }
 
                     // Accept: merge every island it sees into one, and give
                     // the bridge its own polygon so later bridges can chain.
@@ -275,7 +333,11 @@ int main(int argc, char* argv[]) {
                     polygons.push_back(computer.compute(cand, fp));
                     labels.push_back(keep);
                     ++accepted;
-                    fails = 0;
+
+                    // Restart the hunt tightly on the next smallest island.
+                    fails = 0; localFails = 0;
+                    sigma = sigmaBase; uniformMode = false;
+                    if (islandCount > 1) pickTargetCentre(targetCentre);
                 }
 
                 if (islandCount > 1) {
