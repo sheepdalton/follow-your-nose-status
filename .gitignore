@@ -8,3 +8,4 @@ data/out/
 # macOS
 .DS_Store
 {nvm_path}/
+*.tar.gz
