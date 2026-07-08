@@ -11,6 +11,7 @@ SRCS = src/main.cpp \
        src/SVGExporter.cpp \
        src/MetricsExporter.cpp \
        src/Gates.cpp \
+       src/Network.cpp \
        vendor/pugixml.cpp
 
 TARGET = isovist

@@ -65,6 +65,25 @@ std::vector<int> VisibilityGraph::componentSizes() const {
     return sizes;
 }
 
+std::vector<int> VisibilityGraph::componentLabels() const {
+    std::vector<int> label(m_n, -1);
+    int next = 0;
+    for (int s = 0; s < m_n; ++s) {
+        if (label[s] >= 0) continue;
+        std::queue<int> Q;
+        label[s] = next;
+        Q.push(s);
+        while (!Q.empty()) {
+            int v = Q.front(); Q.pop();
+            for (int w : m_adj[v]) {
+                if (label[w] < 0) { label[w] = next; Q.push(w); }
+            }
+        }
+        ++next;
+    }
+    return label;
+}
+
 int VisibilityGraph::degree(int node) const {
     return static_cast<int>(m_adj[node].size());
 }

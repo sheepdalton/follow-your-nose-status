@@ -1,5 +1,6 @@
 #include "SVGParser.h"
 #include "Gates.h"
+#include "Network.h"
 #include "IsovistPlacer.h"
 #include "IsovistComputer.h"
 #include "IsovistRecord.h"
@@ -40,7 +41,10 @@ static void printUsage(const std::string& prog) {
               << "  --gates <file>     match gate-count CSV (label,x,y,count) to isovists;\n"
               << "                     writes <stem>-gate-counts.csv with all measures\n"
               << "  --MAX-GATE-RADIUS <r>  max gate-to-isovist match distance (default: 50)\n"
-              << "  --HEAL             on a disconnected graph, grow n by (islands+1) and retry\n"
+              << "  --HEAL             on a disconnected graph, add bridge points (kept only\n"
+              << "                     if they join islands) until fully connected\n"
+              << "  --NETWORK <file>          save final isovist centres (after any HEAL) as CSV\n"
+              << "  --NETWORK-RESTORE <file>  skip placement, load centres from a saved network\n"
               << "  --ODseed <O> <D>   origin and dest node IDs for nose (default: random)\n"
               << "  --SIZE <r>        override dot radius (default: 3)\n"
               << "  --LOG             apply natural log to metric before colour mapping\n"
@@ -71,6 +75,8 @@ int main(int argc, char* argv[]) {
     std::string  gatesFile;
     double       maxGateRadius  = 50.0;
     bool         doHeal         = false;
+    std::string  networkOut;
+    std::string  networkIn;
     int          noseOrigin     = -1;
     int          noseDest       = -1;
     int          aChoiceOrigin  = -1;
@@ -103,6 +109,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--gates" && i+1<argc)       { gatesFile     = argv[++i]; }
         else if (arg == "--MAX-GATE-RADIUS" && i+1<argc) { maxGateRadius = std::stod(argv[++i]); }
         else if (arg == "--HEAL")                    { doHeal        = true; }
+        else if (arg == "--NETWORK" && i+1<argc)         { networkOut = argv[++i]; }
+        else if (arg == "--NETWORK-RESTORE" && i+1<argc) { networkIn  = argv[++i]; }
         else if (arg == "--ODseed" && i+2<argc)      { noseOrigin = std::stoi(argv[++i]);
                                                        noseDest   = std::stoi(argv[++i]); }
         else if (arg == "--FLIP")                    { doFlip        = true; }
@@ -127,10 +135,22 @@ int main(int argc, char* argv[]) {
         SVGParser parser;
         FloorPlan fp = parser.parse(inputPath);
 
-        std::cout << "Placing " << n << " isovist centers "
-                  << "(candidates=" << candidates << ", seed=" << seed << ")...\n";
-        IsovistPlacer placer(fp, n, candidates, seed);
-        std::vector<Point> centers = placer.place();
+        std::vector<Point> centers;
+        if (!networkIn.empty()) {
+            if (doHeal) {
+                std::cerr << "ERROR: --HEAL cannot be combined with --NETWORK-RESTORE "
+                          << "(healing would regenerate the restored centres).\n";
+                return 1;
+            }
+            centers = Network::load(networkIn);
+            n    = static_cast<int>(centers.size());
+            nStr = std::to_string(n);
+        } else {
+            std::cout << "Placing " << n << " isovist centers "
+                      << "(candidates=" << candidates << ", seed=" << seed << ")...\n";
+            IsovistPlacer placer(fp, n, candidates, seed);
+            centers = placer.place();
+        }
 
         double dotRadius = (sizeOverride > 0.0) ? sizeOverride : 3.0;
         std::cout << "Open area: " << fp.openArea() << "  dot radius: " << dotRadius << "\n";
@@ -175,13 +195,22 @@ int main(int argc, char* argv[]) {
 
                 graph = std::make_unique<VisibilityGraph>(n);
                 graph->build(polygons, centers);
-                polygons.clear();
-                polygons.shrink_to_fit();
 
                 std::vector<int> comps = graph->componentSizes();
-                if (comps.size() == 1) break;   // fully connected
+                if (comps.size() == 1) {        // fully connected
+                    polygons.clear();
+                    polygons.shrink_to_fit();
+                    break;
+                }
 
                 if (!doHeal) {
+                    if (doVisGraph) {
+                        // Export the component-coloured graph anyway — it is
+                        // exactly the diagnostic needed for a fragmented map.
+                        fs::path p = outDir / (stem + "-graph-" + nStr + ".svg");
+                        svgExp.exportGraph(inputPath, p.string(), centers,
+                                           graph->adjacency(), dotRadius);
+                    }
                     std::cerr << "\nERROR: the visibility graph is NOT fully connected.\n"
                               << "  " << comps.size() << " components; largest has "
                               << comps[0] << " of " << n << " nodes.\n"
@@ -198,19 +227,82 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
 
-                // Geometric growth: at least +25% per round (never less than
-                // islands+1) so sparse plans converge in a handful of rounds.
-                int add = std::max(static_cast<int>(comps.size()) + 1, n / 4);
-                std::cout << "HEAL: " << comps.size() << " islands -> adding " << add
-                          << " isovists (n = " << n << " -> " << (n + add)
-                          << ") and restarting\n";
-                n += add;
-                nStr = std::to_string(n);
+                // Bridge-hunting heal: try random candidate points; keep a
+                // candidate only if it can see nodes of two or more different
+                // islands (it merges them).  Useless candidates are discarded,
+                // so the node count grows only by accepted bridges.
+                std::cout << "HEAL: " << comps.size()
+                          << " islands -> hunting bridge points...\n";
 
-                // Same seed: the placer regenerates the original centres and
-                // extends the Mitchell sequence with the extra points.
-                IsovistPlacer healPlacer(fp, n, candidates, seed);
-                centers = healPlacer.place();
+                std::vector<int> labels = graph->componentLabels();
+                int islandCount = static_cast<int>(comps.size());
+
+                Polygon::BBox bbox = fp.boundingBox();
+                std::mt19937 rng(seed + 1000003u * static_cast<unsigned>(healRound));
+                std::uniform_real_distribution<double> rx(bbox.minX, bbox.maxX);
+                std::uniform_real_distribution<double> ry(bbox.minY, bbox.maxY);
+
+                const int MAX_BRIDGE_TRIES = 20000;  // consecutive failures
+                int fails    = 0;
+                int accepted = 0;
+
+                while (islandCount > 1 && fails < MAX_BRIDGE_TRIES) {
+                    Point cand(rx(rng), ry(rng));
+                    if (!fp.isValidPoint(cand)) { ++fails; continue; }
+
+                    // Which islands can this candidate see?  (Visibility is
+                    // symmetric: cand sees node j iff cand is inside j's
+                    // isovist polygon.)
+                    std::vector<int> seen;
+                    for (size_t j = 0; j < polygons.size(); ++j) {
+                        if (polygons[j].containsPoint(cand)) {
+                            int c = labels[j];
+                            if (std::find(seen.begin(), seen.end(), c) == seen.end())
+                                seen.push_back(c);
+                        }
+                    }
+                    if (seen.size() < 2) { ++fails; continue; }
+
+                    // Accept: merge every island it sees into one, and give
+                    // the bridge its own polygon so later bridges can chain.
+                    int keep = seen[0];
+                    for (int& l : labels)
+                        if (std::find(seen.begin()+1, seen.end(), l) != seen.end())
+                            l = keep;
+                    islandCount -= static_cast<int>(seen.size()) - 1;
+
+                    centers.push_back(cand);
+                    polygons.push_back(computer.compute(cand, fp));
+                    labels.push_back(keep);
+                    ++accepted;
+                    fails = 0;
+                }
+
+                if (islandCount > 1) {
+                    if (doVisGraph) {
+                        // Rebuild including the accepted bridges so the
+                        // coloured graph shows the truly unbridgeable islands.
+                        VisibilityGraph gFinal(static_cast<int>(centers.size()));
+                        gFinal.build(polygons, centers);
+                        fs::path p = outDir / (stem + "-graph-"
+                                     + std::to_string(centers.size()) + ".svg");
+                        svgExp.exportGraph(inputPath, p.string(), centers,
+                                           gFinal.adjacency(), dotRadius);
+                    }
+                    std::cerr << "\nERROR: HEAL gave up: no bridge candidate found in "
+                              << MAX_BRIDGE_TRIES << " consecutive tries; "
+                              << islandCount << " islands remain (after "
+                              << accepted << " bridges).\n"
+                              << "  The remaining islands are probably sealed spaces "
+                              << "(e.g. courtyards) that no point can bridge.\n"
+                              << "  Use --vis-graph without --HEAL to see them.\n";
+                    return 1;
+                }
+
+                n    = static_cast<int>(centers.size());
+                nStr = std::to_string(n);
+                std::cout << "HEAL: connected with " << accepted
+                          << " bridge points (n = " << n << "); verifying...\n";
                 svgExp.exportSVG(inputPath, (outDir / (stem + ".svg")).string(),
                                  centers, dotRadius);
             }
@@ -495,6 +587,10 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // ---- save network (post-HEAL centres) ----
+        if (!networkOut.empty())
+            Network::save(centers, networkOut);
 
         // ---- 7-isovist visual experiment (always) ----
         {

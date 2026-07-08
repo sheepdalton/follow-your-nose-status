@@ -40,6 +40,9 @@ public:
     // A fully connected graph returns a single entry equal to nodeCount().
     std::vector<int> componentSizes() const;
 
+    // Component label (0-based, arbitrary order) of every node.
+    std::vector<int> componentLabels() const;
+
     // Betweenness centrality via Brandes' algorithm.
     // For every ordered pair (s,t), each intermediate node on a shortest path
     // accumulates 1/k where k is the number of equal-length shortest paths.

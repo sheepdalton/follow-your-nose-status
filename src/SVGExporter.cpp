@@ -389,31 +389,68 @@ void SVGExporter::exportGraph(const std::string& inputPath,
     pugi::xml_node group = svgNode.append_child("g");
     group.append_attribute("id") = "visibility_graph";
 
-    // All edges as thin grey lines (draw each undirected edge once: i < j)
+    // ── Label every node with its connected component ────────────────────────
+    const int nNodes = static_cast<int>(adj.size());
+    std::vector<int> comp(nNodes, -1);
+    std::vector<int> compSize;
+    for (int s = 0; s < nNodes; ++s) {
+        if (comp[s] >= 0) continue;
+        int id = static_cast<int>(compSize.size());
+        int size = 0;
+        std::vector<int> stack{ s };
+        comp[s] = id;
+        while (!stack.empty()) {
+            int v = stack.back(); stack.pop_back();
+            ++size;
+            for (int w : adj[v]) {
+                if (comp[w] < 0) { comp[w] = id; stack.push_back(w); }
+            }
+        }
+        compSize.push_back(size);
+    }
+    int largest = 0;
+    for (size_t c = 1; c < compSize.size(); ++c)
+        if (compSize[c] > compSize[largest]) largest = static_cast<int>(c);
+
+    // Largest component: grey.  Every island: bright cycling colour, fat dots.
+    const std::vector<std::string> palette = {
+        "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
+        "#ff7f00", "#a65628", "#f781bf", "#00ced1"
+    };
+    auto compColor = [&](int c) -> std::string {
+        return (c == largest) ? "#999999" : palette[c % palette.size()];
+    };
+
+    // Edges (each undirected edge once: i < j), coloured by component
     pugi::xml_node lines = group.append_child("g");
-    lines.append_attribute("stroke")       = "#888888";
     lines.append_attribute("stroke-width") = "0.3";
-    lines.append_attribute("opacity")      = "0.4";
-    for (int i = 0; i < (int)adj.size(); ++i) {
+    lines.append_attribute("opacity")      = "0.5";
+    for (int i = 0; i < nNodes; ++i) {
         for (int j : adj[i]) {
             if (j <= i) continue;
             pugi::xml_node ln = lines.append_child("line");
-            ln.append_attribute("x1") = fmt(centers[i].x).c_str();
-            ln.append_attribute("y1") = fmt(centers[i].y).c_str();
-            ln.append_attribute("x2") = fmt(centers[j].x).c_str();
-            ln.append_attribute("y2") = fmt(centers[j].y).c_str();
+            ln.append_attribute("x1")     = fmt(centers[i].x).c_str();
+            ln.append_attribute("y1")     = fmt(centers[i].y).c_str();
+            ln.append_attribute("x2")     = fmt(centers[j].x).c_str();
+            ln.append_attribute("y2")     = fmt(centers[j].y).c_str();
+            ln.append_attribute("stroke") = compColor(comp[i]).c_str();
         }
     }
 
-    // Centres on top
+    // Centres on top; island nodes drawn double size in their island colour
     pugi::xml_node dots = group.append_child("g");
-    dots.append_attribute("fill") = "#333333";
-    for (const auto& p : centers) {
+    for (int i = 0; i < nNodes; ++i) {
+        bool island = (comp[i] != largest);
         pugi::xml_node c = dots.append_child("circle");
-        c.append_attribute("cx") = fmt(p.x).c_str();
-        c.append_attribute("cy") = fmt(p.y).c_str();
-        c.append_attribute("r")  = dotRadius;
+        c.append_attribute("cx")   = fmt(centers[i].x).c_str();
+        c.append_attribute("cy")   = fmt(centers[i].y).c_str();
+        c.append_attribute("r")    = island ? dotRadius * 2.0 : dotRadius;
+        c.append_attribute("fill") = compColor(comp[i]).c_str();
     }
+
+    if (compSize.size() > 1)
+        std::cout << "Graph visual: " << compSize.size() << " components; largest "
+                  << compSize[largest] << " nodes (grey), islands coloured\n";
 
     addMeasureLabel(svgNode, "visibility graph", centers);
 
