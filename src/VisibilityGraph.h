@@ -74,19 +74,31 @@ public:
     std::vector<double> computeTopoStatus() const;
 
     // Polar path: like the nose path but the cost of edge A→B is
-    //   (angle(A→D, A→B) / 90°) × euclidean_distance(A, B)
+    //   (angle(A→D, A→B) / 90°)^gamma × euclidean_distance(A, B)
     // so the best candidate is both in the right direction AND close.
+    // gamma tunes the balance: 0 = pure metric (angle ignored), 1 = plain
+    // angle×distance, >1 = straightness increasingly dominates.
     // No topological depth constraint — pure Dijkstra over all neighbours.
     NoseResult computePolarPath(int origin, int dest,
-                                const std::vector<Point>& centers) const;
+                                const std::vector<Point>& centers,
+                                double gamma = 1.0) const;
+
+    // Metric path: shortest route by pure Euclidean edge length (standard
+    // Dijkstra). No angle term and no depth constraint — the walked-distance
+    // baseline for comparison against the nose and polar routes.
+    NoseResult computeMetricPath(int origin, int dest,
+                                 const std::vector<Point>& centers) const;
 
     // Polar centrality status: for every destination D, sum over all
     // origins O of (a) the cumulative angle and (b) the cumulative
     // angle×distance product along the polar-optimal route O→D.
     // Results are indexed by destination node.
+    // gamma applies the same (angle/90)^gamma weighting as computePolarPath
+    // to the routing cost, so the status reflects the chosen polar routes.
     void computePolarStatus(const std::vector<Point>& centers,
                             std::vector<double>& statusAngle,
-                            std::vector<double>& statusProduct) const;
+                            std::vector<double>& statusProduct,
+                            double gamma = 1.0) const;
 
     // Full A-choice accumulation: runs angular Dijkstra from every source,
     // traces back the least-turn path to every destination, and accumulates

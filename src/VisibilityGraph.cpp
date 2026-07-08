@@ -487,12 +487,14 @@ NoseResult VisibilityGraph::computeNosePath(int origin, int dest,
 
 // Polar path.
 //
-// Cost of edge A→B = (angle(A→D, A→B) / 90°) × distance(A, B)
+// Cost of edge A→B = (angle(A→D, A→B) / 90°)^gamma × distance(A, B)
 // The best next step is both pointed toward the destination AND close.
 // An edge aimed exactly at the destination is free regardless of length.
-// No topological depth constraint; standard Dijkstra over all neighbours.
+// gamma tunes the balance: 0 = pure metric, 1 = plain angle×distance,
+// >1 = straightness dominates.  No depth constraint; plain Dijkstra.
 NoseResult VisibilityGraph::computePolarPath(int origin, int dest,
-                                              const std::vector<Point>& centers) const {
+                                              const std::vector<Point>& centers,
+                                              double gamma) const {
     const double INF = std::numeric_limits<double>::infinity();
 
     // Polar cost of moving from node A to neighbour B.
@@ -507,7 +509,7 @@ NoseResult VisibilityGraph::computePolarPath(int origin, int dest,
         double cosT = (dx*ex + dy*ey) / (magD * magE);
         cosT = std::max(-1.0, std::min(1.0, cosT));
         double angleUnits = std::acos(cosT) * (180.0 / M_PI) / 90.0;  // 0..2
-        return angleUnits * magE;
+        return std::pow(angleUnits, gamma) * magE;
     };
 
     std::vector<double> dist(m_n, INF);
@@ -570,6 +572,69 @@ NoseResult VisibilityGraph::computePolarPath(int origin, int dest,
     return result;
 }
 
+// Metric path.
+//
+// Cost of edge A→B = euclidean distance(A, B).  Standard Dijkstra, no angle
+// term and no depth constraint: the classic shortest-walked-distance route,
+// used as the metric baseline against the nose and polar paths.
+NoseResult VisibilityGraph::computeMetricPath(int origin, int dest,
+                                               const std::vector<Point>& centers) const {
+    const double INF = std::numeric_limits<double>::infinity();
+
+    auto edgeCost = [&](int A, int B) -> double {
+        return centers[A].distanceTo(centers[B]);
+    };
+
+    std::vector<double> dist(m_n, INF);
+    std::vector<int>    prev(m_n, -1);
+
+    dist[origin] = 0.0;
+
+    using Entry = std::pair<double,int>;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> PQ;
+    PQ.push({0.0, origin});
+
+    while (!PQ.empty()) {
+        auto [d, u] = PQ.top(); PQ.pop();
+        if (d > dist[u]) continue;
+        if (u == dest) break;
+
+        for (int v : m_adj[u]) {
+            double cost = d + edgeCost(u, v);
+            if (cost < dist[v]) {
+                dist[v] = cost;
+                prev[v] = u;
+                PQ.push({cost, v});
+            }
+        }
+    }
+
+    NoseResult result;
+    result.totalDepth = dist[dest];
+
+    if (dist[dest] == INF) {
+        std::cout << "Metric: no path from " << origin << " to " << dest << "\n";
+        return result;
+    }
+
+    // Reconstruct path
+    for (int v = dest; v != -1; v = prev[v])
+        result.path.push_back(v);
+    std::reverse(result.path.begin(), result.path.end());
+
+    // Per-edge lengths
+    for (int i = 0; i + 1 < (int)result.path.size(); ++i)
+        result.edgeCosts.push_back(edgeCost(result.path[i], result.path[i+1]));
+
+    // Topological depths along the path (informational)
+    std::vector<int> topo = computeTopoDepths(dest);
+    for (int id : result.path)
+        result.topoDepths.push_back(topo[id]);
+
+    // No final-edge assert: with a pure distance cost the last edge is not 0.
+    return result;
+}
+
 // Topological status (total depth / integration).
 //
 // One BFS per node; the node's status is the sum of hop distances to all
@@ -611,7 +676,8 @@ std::vector<double> VisibilityGraph::computeTopoStatus() const {
 // Both are measured along the same polar-optimal routes.
 void VisibilityGraph::computePolarStatus(const std::vector<Point>& centers,
                                           std::vector<double>& statusAngle,
-                                          std::vector<double>& statusProduct) const {
+                                          std::vector<double>& statusProduct,
+                                          double gamma) const {
     const double INF = std::numeric_limits<double>::infinity();
     statusAngle.assign(m_n, 0.0);
     statusProduct.assign(m_n, 0.0);
@@ -649,7 +715,8 @@ void VisibilityGraph::computePolarStatus(const std::vector<Point>& centers,
 
             for (int v : m_adj[u]) {
                 // Edge v→u seen from v (v is one step further from D).
-                double w    = angleUnits(v, u) * centers[v].distanceTo(centers[u]);
+                double w    = std::pow(angleUnits(v, u), gamma)
+                              * centers[v].distanceTo(centers[u]);
                 double cand = d + w;
                 if (cand < dist[v]) {
                     dist[v]    = cand;

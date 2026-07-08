@@ -37,6 +37,8 @@ static void printUsage(const std::string& prog) {
               << "  --vis-graph        draw all visibility graph edges as grey lines\n"
               << "  --vis-nose-single  Nose Integration single path SVG\n"
               << "  --vis-polar-single polar (angle x distance) single path SVG\n"
+              << "  --vis-metric-single metric (euclidean distance) single path SVG\n"
+              << "  --polar-g <g>      polar angle exponent gamma (default: 1; 0=metric, >1=straighter)\n"
               << "  --vis-polar-status-angle    heatmap: sum of angle costs of all polar routes here\n"
               << "  --vis-polar-status-product  heatmap: sum of angle x distance costs of all polar routes here\n"
               << "  --vis-topo-status  heatmap: total topological depth (integration)\n"
@@ -71,6 +73,8 @@ int main(int argc, char* argv[]) {
     bool         doVisGraph     = false;
     bool         doVisNose      = false;
     bool         doVisPolar     = false;
+    bool         doVisMetric    = false;
+    double       polarGamma     = 1.0;
     bool         doVisPolarStatusAngle   = false;
     bool         doVisPolarStatusProduct = false;
     bool         doVisTopoStatus         = false;
@@ -105,6 +109,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-graph")               { doVisGraph    = true; }
         else if (arg == "--vis-nose-single")         { doVisNose     = true; }
         else if (arg == "--vis-polar-single")        { doVisPolar    = true; }
+        else if (arg == "--vis-metric-single")       { doVisMetric   = true; }
+        else if (arg == "--polar-g" && i+1<argc)     { polarGamma    = std::stod(argv[++i]); }
         else if (arg == "--vis-polar-status-angle")  { doVisPolarStatusAngle   = true; }
         else if (arg == "--vis-polar-status-product"){ doVisPolarStatusProduct = true; }
         else if (arg == "--vis-topo-status")         { doVisTopoStatus         = true; }
@@ -163,8 +169,8 @@ int main(int argc, char* argv[]) {
         // ---- compute all visibility polygons ----
         bool doGates       = !gatesFile.empty();
         bool doPolarStatus = doVisPolarStatusAngle || doVisPolarStatusProduct;
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doPolarStatus || doVisTopoStatus || doGates;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doPolarStatus || doVisTopoStatus || doGates;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doPolarStatus || doVisTopoStatus || doGates;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doPolarStatus || doVisTopoStatus || doGates;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
@@ -394,7 +400,7 @@ int main(int argc, char* argv[]) {
                 }
                 if (doPolarStatus || doGates) {
                     std::vector<double> psa, psp;
-                    graph->computePolarStatus(centers, psa, psp);
+                    graph->computePolarStatus(centers, psa, psp, polarGamma);
                     for (int i = 0; i < n; ++i) {
                         records[i].polarStatusAngle   = psa[i];
                         records[i].polarStatusProduct = psp[i];
@@ -615,7 +621,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "Polar path: origin=" << ori
                           << "  dest=" << dst << "\n";
 
-                NoseResult polar = graph->computePolarPath(ori, dst, centers);
+                NoseResult polar = graph->computePolarPath(ori, dst, centers, polarGamma);
 
                 if (!polar.path.empty()) {
                     std::cout << "Path (" << polar.path.size() << " nodes, "
@@ -629,11 +635,23 @@ int main(int argc, char* argv[]) {
                         if (i == 0)
                             std::cout << "  <-- origin";
                         else {
-                            double cost = polar.edgeCosts[i-1];
-                            double len  = centers[id].distanceTo(centers[polar.path[i-1]]);
-                            double angleDeg = (len > 1e-12) ? (cost / len) * 90.0 : 0.0;
-                            std::cout << "  cost=" << std::setprecision(3) << cost
-                                      << "  dist=" << std::setprecision(1) << len
+                            // True turn angle at node i-1: between (A→dest) and (A→next),
+                            // computed geometrically so it is correct for any gamma.
+                            const Point& A = centers[polar.path[i-1]];
+                            const Point& B = centers[id];
+                            const Point& D = centers[dst];
+                            double dxv = D.x - A.x, dyv = D.y - A.y;
+                            double exv = B.x - A.x, eyv = B.y - A.y;
+                            double magD = std::sqrt(dxv*dxv + dyv*dyv);
+                            double magE = std::sqrt(exv*exv + eyv*eyv);
+                            double angleDeg = 0.0;
+                            if (magD > 1e-12 && magE > 1e-12) {
+                                double c = (dxv*exv + dyv*eyv) / (magD*magE);
+                                c = std::max(-1.0, std::min(1.0, c));
+                                angleDeg = std::acos(c) * 180.0 / M_PI;
+                            }
+                            std::cout << "  cost=" << std::setprecision(3) << polar.edgeCosts[i-1]
+                                      << "  dist=" << std::setprecision(1) << magE
                                       << "  angle=" << angleDeg << "deg";
                             if (i == (int)polar.path.size()-1)
                                 std::cout << "  <-- dest";
@@ -646,6 +664,52 @@ int main(int argc, char* argv[]) {
                     fs::path p = outDir / (stem + "-polar-" + nStr + ".svg");
                     svgExp.exportNosePath(inputPath, p.string(), centers,
                                           polar, ori, dst, dotRadius, "polar");
+                }
+            }
+            if (doVisMetric) {
+                // Pick O and D: use --ODseed values or fall back to random
+                int ori, dst;
+                if (noseOrigin >= 0 && noseOrigin < n &&
+                    noseDest   >= 0 && noseDest   < n) {
+                    ori = noseOrigin;
+                    dst = noseDest;
+                } else {
+                    std::mt19937 rng(seed);
+                    std::uniform_int_distribution<int> dist(0, n - 1);
+                    ori = dist(rng);
+                    do { dst = dist(rng); } while (dst == ori);
+                }
+
+                std::cout << "Metric path: origin=" << ori
+                          << "  dest=" << dst << "\n";
+
+                NoseResult metric = graph->computeMetricPath(ori, dst, centers);
+
+                if (!metric.path.empty()) {
+                    std::cout << "Path (" << metric.path.size() << " nodes, "
+                              << metric.path.size()-1 << " steps):\n";
+                    for (int i = 0; i < (int)metric.path.size(); ++i) {
+                        int id = metric.path[i];
+                        std::cout << "  [" << i << "] node " << id
+                                  << "  (" << std::fixed << std::setprecision(1)
+                                  << centers[id].x << ", " << centers[id].y << ")"
+                                  << "  topo=" << metric.topoDepths[i];
+                        if (i == 0)
+                            std::cout << "  <-- origin";
+                        else {
+                            double len = metric.edgeCosts[i-1];
+                            std::cout << "  dist=" << std::setprecision(1) << len;
+                            if (i == (int)metric.path.size()-1)
+                                std::cout << "  <-- dest";
+                        }
+                        std::cout << "\n";
+                    }
+                    std::cout << "Total metric length: " << std::setprecision(1)
+                              << metric.totalDepth << "\n";
+
+                    fs::path p = outDir / (stem + "-metric-" + nStr + ".svg");
+                    svgExp.exportNosePath(inputPath, p.string(), centers,
+                                          metric, ori, dst, dotRadius, "metric");
                 }
             }
         }
