@@ -8,6 +8,8 @@
 #include <limits>
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <functional>
 
 VisibilityGraph::VisibilityGraph(int n) : m_n(n), m_adj(n) {}
 
