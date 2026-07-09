@@ -9,6 +9,7 @@
 #include "MetricsExporter.h"
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <string>
 #include <filesystem>
 #include <memory>
@@ -661,9 +662,12 @@ int main(int argc, char* argv[]) {
                     std::cout << "Total polar cost: " << std::setprecision(3)
                               << polar.totalDepth << "\n";
 
-                    fs::path p = outDir / (stem + "-polar-" + nStr + ".svg");
+                    std::ostringstream lbl, gtag;
+                    lbl  << "polar (g=" << polarGamma << ")";
+                    gtag << "-g" << polarGamma;
+                    fs::path p = outDir / (stem + "-polar" + gtag.str() + "-" + nStr + ".svg");
                     svgExp.exportNosePath(inputPath, p.string(), centers,
-                                          polar, ori, dst, dotRadius, "polar");
+                                          polar, ori, dst, dotRadius, lbl.str());
                 }
             }
             if (doVisMetric) {
