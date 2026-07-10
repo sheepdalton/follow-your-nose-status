@@ -40,6 +40,7 @@ static void printUsage(const std::string& prog) {
               << "  --vis-polar-single polar (angle x distance) single path SVG\n"
               << "  --vis-metric-single metric (euclidean distance) single path SVG\n"
               << "  --vis-prospect-single goal-directed least-turn path SVG (foresight of onward turn)\n"
+              << "  --vis-topo-single  topological fewest-steps (BFS) single path SVG\n"
               << "  --prospect-w <w>   prospect turn weight (default: 1; >1 straighter, <1 greedier)\n"
               << "  --polar-g <g>      polar angle exponent gamma (default: 1; 0=metric, >1=straighter)\n"
               << "  --vis-polar-status-angle    heatmap: sum of angle costs of all polar routes here\n"
@@ -78,6 +79,7 @@ int main(int argc, char* argv[]) {
     bool         doVisPolar     = false;
     bool         doVisMetric    = false;
     bool         doVisProspect  = false;
+    bool         doVisTopoPath  = false;
     double       polarGamma     = 1.0;
     double       prospectW      = 1.0;
     bool         doVisPolarStatusAngle   = false;
@@ -116,6 +118,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-polar-single")        { doVisPolar    = true; }
         else if (arg == "--vis-metric-single")       { doVisMetric   = true; }
         else if (arg == "--vis-prospect-single")     { doVisProspect = true; }
+        else if (arg == "--vis-topo-single")         { doVisTopoPath = true; }
         else if (arg == "--polar-g" && i+1<argc)     { polarGamma    = std::stod(argv[++i]); }
         else if (arg == "--prospect-w" && i+1<argc)  { prospectW     = std::stod(argv[++i]); }
         else if (arg == "--vis-polar-status-angle")  { doVisPolarStatusAngle   = true; }
@@ -176,8 +179,8 @@ int main(int argc, char* argv[]) {
         // ---- compute all visibility polygons ----
         bool doGates       = !gatesFile.empty();
         bool doPolarStatus = doVisPolarStatusAngle || doVisPolarStatusProduct;
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doPolarStatus || doVisTopoStatus || doGates;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doPolarStatus || doVisTopoStatus || doGates;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doPolarStatus || doVisTopoStatus || doGates;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doPolarStatus || doVisTopoStatus || doGates;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
@@ -767,6 +770,33 @@ int main(int argc, char* argv[]) {
                     fs::path p = outDir / (stem + "-prospect" + wtag.str() + "-" + nStr + ".svg");
                     svgExp.exportNosePath(inputPath, p.string(), centers,
                                           pr, ori, dst, dotRadius, lbl.str());
+                }
+            }
+            if (doVisTopoPath) {
+                int ori, dst;
+                if (noseOrigin >= 0 && noseOrigin < n &&
+                    noseDest   >= 0 && noseDest   < n) {
+                    ori = noseOrigin;
+                    dst = noseDest;
+                } else {
+                    std::mt19937 rng(seed);
+                    std::uniform_int_distribution<int> dist(0, n - 1);
+                    ori = dist(rng);
+                    do { dst = dist(rng); } while (dst == ori);
+                }
+
+                std::cout << "Topological path: origin=" << ori << "  dest=" << dst << "\n";
+                NoseResult tp = graph->computeTopoPath(ori, dst, centers);
+
+                if (!tp.path.empty()) {
+                    std::cout << "Path (" << tp.path.size() << " nodes, "
+                              << tp.path.size()-1 << " steps)\n";
+                    std::cout << "Total topological depth: " << std::setprecision(0)
+                              << tp.totalDepth << " steps\n";
+
+                    fs::path p = outDir / (stem + "-topo-" + nStr + ".svg");
+                    svgExp.exportNosePath(inputPath, p.string(), centers,
+                                          tp, ori, dst, dotRadius, "topological");
                 }
             }
         }

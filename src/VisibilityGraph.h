@@ -101,6 +101,11 @@ public:
                                    const std::vector<Point>& centers,
                                    double turnWeight = 1.0) const;
 
+    // Topological path: fewest-steps (BFS) route to dest — the traditional
+    // space-syntax shortest path. Reconstructed by descending BFS depth.
+    NoseResult computeTopoPath(int origin, int dest,
+                               const std::vector<Point>& centers) const;
+
     // Polar centrality status: for every destination D, sum over all
     // origins O of (a) the cumulative angle and (b) the cumulative
     // angle×distance product along the polar-optimal route O→D.

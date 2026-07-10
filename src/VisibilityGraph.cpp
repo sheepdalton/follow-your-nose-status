@@ -745,6 +745,39 @@ NoseResult VisibilityGraph::computeProspectPath(int origin, int dest,
     return result;
 }
 
+// Topological path — fewest steps (BFS shortest path) to dest.
+NoseResult VisibilityGraph::computeTopoPath(int origin, int dest,
+                                             const std::vector<Point>& centers) const {
+    (void)centers;   // geometry unused; kept for signature symmetry
+    NoseResult result;
+
+    std::vector<int> depth = computeTopoDepths(dest);   // hops v -> dest
+    if (depth[origin] < 0) {
+        result.totalDepth = std::numeric_limits<double>::infinity();
+        std::cout << "Topo: no path from " << origin << " to " << dest << "\n";
+        return result;
+    }
+
+    // Walk from origin, each step to a neighbour exactly one hop closer.
+    int cur = origin;
+    result.path.push_back(cur);
+    while (cur != dest) {
+        int next = -1;
+        for (int v : m_adj[cur]) {
+            if (depth[v] == depth[cur] - 1) { next = v; break; }
+        }
+        if (next < 0) break;   // only if disconnected (shouldn't happen here)
+        result.edgeCosts.push_back(1.0);   // one step
+        cur = next;
+        result.path.push_back(cur);
+    }
+
+    result.totalDepth = static_cast<double>(depth[origin]);   // number of steps
+    for (int id : result.path)
+        result.topoDepths.push_back(depth[id]);
+    return result;
+}
+
 // Topological status (total depth / integration).
 //
 // One BFS per node; the node's status is the sum of hop distances to all
