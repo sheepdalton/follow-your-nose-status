@@ -635,6 +635,116 @@ NoseResult VisibilityGraph::computeMetricPath(int origin, int dest,
     return result;
 }
 
+// Prospect path.
+//
+// Goal-directed least-turn route with foresight of the onward turn. The state
+// is a directed arc (prev, cur) so the turn made AT cur — the deflection
+// between the incoming heading and the outgoing step — can be priced. Step
+// cost = goalAngle + turnWeight*turnAngle:
+//   goalAngle = angle(cur→next, cur→dest)  ("keep heading toward T")
+//   turnAngle = angle(prev→cur, cur→next)  ("dislike changing direction")
+// Because it is a full Dijkstra over arcs it has global foresight — an
+// overshoot to a well-aligned but dead-end node is rejected because the turn
+// needed to leave it is expensive. No distance term; metric stays ground truth.
+NoseResult VisibilityGraph::computeProspectPath(int origin, int dest,
+                                                 const std::vector<Point>& centers,
+                                                 double turnWeight) const {
+    const double INF = std::numeric_limits<double>::infinity();
+    const double R2D = 180.0 / M_PI;
+
+    auto angleBetween = [](double ax, double ay, double bx, double by) -> double {
+        double ma = std::sqrt(ax*ax + ay*ay), mb = std::sqrt(bx*bx + by*by);
+        if (ma < 1e-12 || mb < 1e-12) return 0.0;
+        double c = (ax*bx + ay*by) / (ma*mb);
+        c = std::max(-1.0, std::min(1.0, c));
+        return std::acos(c);   // radians, 0..pi
+    };
+
+    // Step cost at cur, arrived from prev (prev<0 = origin), going to nxt.
+    auto stepCost = [&](int prev, int cur, int nxt) -> double {
+        double sx = centers[nxt].x - centers[cur].x;   // cur→nxt
+        double sy = centers[nxt].y - centers[cur].y;
+        double gx = centers[dest].x - centers[cur].x;  // cur→dest
+        double gy = centers[dest].y - centers[cur].y;
+        double goal = angleBetween(sx, sy, gx, gy);
+        double turn = 0.0;
+        if (prev >= 0) {
+            double hx = centers[cur].x - centers[prev].x;  // incoming heading
+            double hy = centers[cur].y - centers[prev].y;
+            turn = angleBetween(hx, hy, sx, sy);
+        }
+        return goal + turnWeight * turn;
+    };
+
+    auto enc = [&](int cur, int prev) { return cur * (m_n + 1) + (prev + 1); };
+
+    std::unordered_map<int,double> dist;
+    std::unordered_map<int,int>    from;
+    using Entry = std::pair<double,int>;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> PQ;
+
+    int startKey = enc(origin, -1);
+    dist[startKey] = 0.0;
+    PQ.push({0.0, startKey});
+
+    int    arriveKey = -1;
+    double arriveCost = INF;
+
+    while (!PQ.empty()) {
+        auto [d, key] = PQ.top(); PQ.pop();
+        auto it = dist.find(key);
+        if (it == dist.end() || d > it->second) continue;
+
+        int cur  = key / (m_n + 1);
+        int prev = key % (m_n + 1) - 1;
+        if (cur == dest) { arriveKey = key; arriveCost = d; break; }
+
+        for (int nxt : m_adj[cur]) {
+            if (nxt == prev) continue;               // no immediate U-turn
+            double nd = d + stepCost(prev, cur, nxt);
+            int    nk = enc(nxt, cur);
+            auto   jt = dist.find(nk);
+            if (jt == dist.end() || nd < jt->second) {
+                dist[nk] = nd;
+                from[nk] = key;
+                PQ.push({nd, nk});
+            }
+        }
+    }
+
+    NoseResult result;
+    if (arriveKey < 0) {
+        result.totalDepth = INF;
+        std::cout << "Prospect: no path from " << origin << " to " << dest << "\n";
+        return result;
+    }
+    result.totalDepth = arriveCost * R2D;   // report in degrees
+
+    // Reconstruct node path
+    std::vector<int> rev;
+    int k = arriveKey;
+    while (k != startKey) {
+        rev.push_back(k / (m_n + 1));
+        auto f = from.find(k);
+        if (f == from.end()) break;
+        k = f->second;
+    }
+    rev.push_back(origin);
+    std::reverse(rev.begin(), rev.end());
+    result.path = rev;
+
+    // Per-step costs (degrees) and topo depths (informational)
+    for (int i = 0; i + 1 < (int)result.path.size(); ++i) {
+        int prev = (i == 0) ? -1 : result.path[i-1];
+        result.edgeCosts.push_back(stepCost(prev, result.path[i], result.path[i+1]) * R2D);
+    }
+    std::vector<int> topo = computeTopoDepths(dest);
+    for (int id : result.path)
+        result.topoDepths.push_back(topo[id]);
+
+    return result;
+}
+
 // Topological status (total depth / integration).
 //
 // One BFS per node; the node's status is the sum of hop distances to all

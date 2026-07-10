@@ -89,6 +89,18 @@ public:
     NoseResult computeMetricPath(int origin, int dest,
                                  const std::vector<Point>& centers) const;
 
+    // Prospect path: goal-directed least-turn route with foresight of the
+    // onward turn. Arc-state (prev,cur) Dijkstra; step cost is
+    //   goalAngle + turnWeight * turnAngle   (radians, summed; reported in deg)
+    // where goalAngle = deviation of the step from the current bearing to the
+    // destination ("keep heading at T") and turnAngle = deflection from the
+    // previous heading ("dislike changing direction"). turnWeight is the price
+    // of a turn: >1 favours straight principal routes, <1 corrects toward T
+    // more eagerly. No distance term. Models someone who knows the layout.
+    NoseResult computeProspectPath(int origin, int dest,
+                                   const std::vector<Point>& centers,
+                                   double turnWeight = 1.0) const;
+
     // Polar centrality status: for every destination D, sum over all
     // origins O of (a) the cumulative angle and (b) the cumulative
     // angle×distance product along the polar-optimal route O→D.

@@ -39,6 +39,8 @@ static void printUsage(const std::string& prog) {
               << "  --vis-nose-single  Nose Integration single path SVG\n"
               << "  --vis-polar-single polar (angle x distance) single path SVG\n"
               << "  --vis-metric-single metric (euclidean distance) single path SVG\n"
+              << "  --vis-prospect-single goal-directed least-turn path SVG (foresight of onward turn)\n"
+              << "  --prospect-w <w>   prospect turn weight (default: 1; >1 straighter, <1 greedier)\n"
               << "  --polar-g <g>      polar angle exponent gamma (default: 1; 0=metric, >1=straighter)\n"
               << "  --vis-polar-status-angle    heatmap: sum of angle costs of all polar routes here\n"
               << "  --vis-polar-status-product  heatmap: sum of angle x distance costs of all polar routes here\n"
@@ -75,7 +77,9 @@ int main(int argc, char* argv[]) {
     bool         doVisNose      = false;
     bool         doVisPolar     = false;
     bool         doVisMetric    = false;
+    bool         doVisProspect  = false;
     double       polarGamma     = 1.0;
+    double       prospectW      = 1.0;
     bool         doVisPolarStatusAngle   = false;
     bool         doVisPolarStatusProduct = false;
     bool         doVisTopoStatus         = false;
@@ -111,7 +115,9 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-nose-single")         { doVisNose     = true; }
         else if (arg == "--vis-polar-single")        { doVisPolar    = true; }
         else if (arg == "--vis-metric-single")       { doVisMetric   = true; }
+        else if (arg == "--vis-prospect-single")     { doVisProspect = true; }
         else if (arg == "--polar-g" && i+1<argc)     { polarGamma    = std::stod(argv[++i]); }
+        else if (arg == "--prospect-w" && i+1<argc)  { prospectW     = std::stod(argv[++i]); }
         else if (arg == "--vis-polar-status-angle")  { doVisPolarStatusAngle   = true; }
         else if (arg == "--vis-polar-status-product"){ doVisPolarStatusProduct = true; }
         else if (arg == "--vis-topo-status")         { doVisTopoStatus         = true; }
@@ -170,8 +176,8 @@ int main(int argc, char* argv[]) {
         // ---- compute all visibility polygons ----
         bool doGates       = !gatesFile.empty();
         bool doPolarStatus = doVisPolarStatusAngle || doVisPolarStatusProduct;
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doPolarStatus || doVisTopoStatus || doGates;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doPolarStatus || doVisTopoStatus || doGates;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doPolarStatus || doVisTopoStatus || doGates;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doPolarStatus || doVisTopoStatus || doGates;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
@@ -714,6 +720,53 @@ int main(int argc, char* argv[]) {
                     fs::path p = outDir / (stem + "-metric-" + nStr + ".svg");
                     svgExp.exportNosePath(inputPath, p.string(), centers,
                                           metric, ori, dst, dotRadius, "metric");
+                }
+            }
+            if (doVisProspect) {
+                int ori, dst;
+                if (noseOrigin >= 0 && noseOrigin < n &&
+                    noseDest   >= 0 && noseDest   < n) {
+                    ori = noseOrigin;
+                    dst = noseDest;
+                } else {
+                    std::mt19937 rng(seed);
+                    std::uniform_int_distribution<int> dist(0, n - 1);
+                    ori = dist(rng);
+                    do { dst = dist(rng); } while (dst == ori);
+                }
+
+                std::cout << "Prospect path: origin=" << ori << "  dest=" << dst
+                          << "  w=" << prospectW << "\n";
+
+                NoseResult pr = graph->computeProspectPath(ori, dst, centers, prospectW);
+
+                if (!pr.path.empty()) {
+                    std::cout << "Path (" << pr.path.size() << " nodes, "
+                              << pr.path.size()-1 << " steps):\n";
+                    for (int i = 0; i < (int)pr.path.size(); ++i) {
+                        int id = pr.path[i];
+                        std::cout << "  [" << i << "] node " << id
+                                  << "  (" << std::fixed << std::setprecision(1)
+                                  << centers[id].x << ", " << centers[id].y << ")"
+                                  << "  topo=" << pr.topoDepths[i];
+                        if (i == 0)
+                            std::cout << "  <-- origin";
+                        else {
+                            std::cout << "  cost=" << std::setprecision(2) << pr.edgeCosts[i-1] << "deg";
+                            if (i == (int)pr.path.size()-1)
+                                std::cout << "  <-- dest";
+                        }
+                        std::cout << "\n";
+                    }
+                    std::cout << "Total prospect cost: " << std::setprecision(1)
+                              << pr.totalDepth << " deg\n";
+
+                    std::ostringstream lbl, wtag;
+                    lbl  << "prospect (w=" << prospectW << ")";
+                    wtag << "-w" << prospectW;
+                    fs::path p = outDir / (stem + "-prospect" + wtag.str() + "-" + nStr + ".svg");
+                    svgExp.exportNosePath(inputPath, p.string(), centers,
+                                          pr, ori, dst, dotRadius, lbl.str());
                 }
             }
         }
