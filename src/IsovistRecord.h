@@ -13,4 +13,5 @@ struct IsovistRecord {
     double polarStatusAngle   = 0.0; // sum of angle-only costs of polar routes here
     double polarStatusProduct = 0.0; // sum of angle*distance costs of polar routes here
     double topoStatus         = 0.0; // total depth: sum of BFS hops to all other nodes
+    double prospectStatus     = 0.0; // sum of prospect (goal+w*turn) costs of routes here
 };

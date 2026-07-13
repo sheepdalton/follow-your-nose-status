@@ -106,6 +106,15 @@ public:
     NoseResult computeTopoPath(int origin, int dest,
                                const std::vector<Point>& centers) const;
 
+    // Prospect status: for every destination D, the sum over all origins of
+    // the optimal prospect cost (goalAngle + turnWeight*turnAngle, degrees)
+    // of the route O→D. One reverse arc-state Dijkstra per destination
+    // (the turn term depends on arrival direction, so states are directed
+    // links, as in computeProspectPath). Low = reachable from everywhere
+    // with little turning — a follow-your-nose integration.
+    std::vector<double> computeProspectStatus(const std::vector<Point>& centers,
+                                              double turnWeight = 1.0) const;
+
     // Polar centrality status: for every destination D, sum over all
     // origins O of (a) the cumulative angle and (b) the cumulative
     // angle×distance product along the polar-optimal route O→D.

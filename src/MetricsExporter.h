@@ -75,9 +75,16 @@ public:
                                  const std::vector<IsovistRecord>& records,
                                  double dotRadius = 5.0) const;
 
+    // Exports isovist centers coloured by prospect status (goal+turn cost sum).
+    void exportProspectStatusHeatmap(const std::string& inputSVGPath,
+                                     const std::string& outputPath,
+                                     const std::vector<IsovistRecord>& records,
+                                     double dotRadius = 5.0) const;
+
 private:
     enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice,
-                        PolarStatusAngle, PolarStatusProduct, TopoStatus };
+                        PolarStatusAngle, PolarStatusProduct, TopoStatus,
+                        ProspectStatus };
     bool m_flip = false;
     bool m_log  = false;
 

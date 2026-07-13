@@ -20,7 +20,7 @@ void MetricsExporter::exportCSV(const std::vector<IsovistRecord>& records,
         throw std::runtime_error("MetricsExporter: cannot open for writing: " + outputPath);
 
     out << "id,x,y,area,perimeter,degree,choice,d_choice,a_choice,"
-           "polar_status_angle,polar_status_product,topo_status\n";
+           "polar_status_angle,polar_status_product,topo_status,prospect_status\n";
     out << std::fixed << std::setprecision(4);
     for (const auto& r : records)
         out << r.id << "," << r.center.x << "," << r.center.y
@@ -28,7 +28,7 @@ void MetricsExporter::exportCSV(const std::vector<IsovistRecord>& records,
             << "," << r.degree << "," << r.choice
             << "," << r.dChoice << "," << r.aChoice
             << "," << r.polarStatusAngle << "," << r.polarStatusProduct
-            << "," << r.topoStatus << "\n";
+            << "," << r.topoStatus << "," << r.prospectStatus << "\n";
 
     std::cout << "Exported CSV (" << records.size() << " rows) to: " << outputPath << "\n";
 }
@@ -43,7 +43,7 @@ void MetricsExporter::exportGateCSV(const std::vector<Gate>& gates,
 
     out << "label,x,y,count,log_count,isovist_x,isovist_y,isovist_id,"
            "area,perimeter,degree,choice,d_choice,a_choice,"
-           "polar_status_angle,polar_status_product,topo_status\n";
+           "polar_status_angle,polar_status_product,topo_status,prospect_status\n";
     out << std::fixed << std::setprecision(4);
 
     for (size_t g = 0; g < gates.size(); ++g) {
@@ -61,9 +61,9 @@ void MetricsExporter::exportGateCSV(const std::vector<Gate>& gates,
                 << "," << r.degree << "," << r.choice
                 << "," << r.dChoice << "," << r.aChoice
                 << "," << r.polarStatusAngle << "," << r.polarStatusProduct
-                << "," << r.topoStatus;
+                << "," << r.topoStatus << "," << r.prospectStatus;
         } else {
-            out << ",,,,,,,,,,,";   // no isovist within range
+            out << ",,,,,,,,,,,,";   // no isovist within range
         }
         out << "\n";
     }
@@ -130,6 +130,13 @@ void MetricsExporter::exportPolarStatusProductHeatmap(const std::string& inputSV
     exportHeatmap(inputSVGPath, outputPath, records, Metric::PolarStatusProduct, dotRadius);
 }
 
+void MetricsExporter::exportProspectStatusHeatmap(const std::string& inputSVGPath,
+                                                   const std::string& outputPath,
+                                                   const std::vector<IsovistRecord>& records,
+                                                   double dotRadius) const {
+    exportHeatmap(inputSVGPath, outputPath, records, Metric::ProspectStatus, dotRadius);
+}
+
 void MetricsExporter::exportTopoStatusHeatmap(const std::string& inputSVGPath,
                                                const std::string& outputPath,
                                                const std::vector<IsovistRecord>& records,
@@ -157,6 +164,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
             case Metric::PolarStatusAngle:   return r.polarStatusAngle;
             case Metric::PolarStatusProduct: return r.polarStatusProduct;
             case Metric::TopoStatus:         return r.topoStatus;
+            case Metric::ProspectStatus:     return r.prospectStatus;
         }
         return 0.0;
     };
@@ -196,6 +204,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
         case Metric::PolarStatusAngle:   groupId = "heatmap_polar_status_angle";   break;
         case Metric::PolarStatusProduct: groupId = "heatmap_polar_status_product"; break;
         case Metric::TopoStatus:         groupId = "heatmap_topo_status";          break;
+        case Metric::ProspectStatus:     groupId = "heatmap_prospect_status";      break;
     }
 
     std::string metricName;
@@ -209,6 +218,7 @@ void MetricsExporter::exportHeatmap(const std::string& inputSVGPath,
         case Metric::PolarStatusAngle:   metricName = "polar-status-angle";   break;
         case Metric::PolarStatusProduct: metricName = "polar-status-product"; break;
         case Metric::TopoStatus:         metricName = "topo-status";          break;
+        case Metric::ProspectStatus:     metricName = "prospect-status";      break;
     }
 
     // Measure label just above the content bounding box

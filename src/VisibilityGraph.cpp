@@ -745,6 +745,118 @@ NoseResult VisibilityGraph::computeProspectPath(int origin, int dest,
     return result;
 }
 
+// Prospect status.
+//
+// For each destination D, a reverse Dijkstra over directed arcs (u,v):
+//   H(u,v) = min remaining prospect cost from v to D, given arrival u→v
+//          = min over w of [ goal(v→w vs v→D) + wt*turn(u,v,w) + H(v,w) ]
+// with base H(u,D) = 0.  The origin cost (no turn charged at the start,
+// matching computeProspectPath) is
+//   cost(O) = min over v of [ goal(O→v vs O→D) + H(O,v) ]
+// and status[D] = sum of cost(O) over all origins O, reported in degrees.
+std::vector<double> VisibilityGraph::computeProspectStatus(const std::vector<Point>& centers,
+                                                            double turnWeight) const {
+    const double INF = std::numeric_limits<double>::infinity();
+    const double R2D = 180.0 / M_PI;
+    std::vector<double> status(m_n, 0.0);
+
+    // Index all directed arcs once: arcId[(u,v)] via per-node offsets.
+    // arcOf[u] gives the base index of u's outgoing arcs (ordered as m_adj[u]).
+    std::vector<int> arcBase(m_n + 1, 0);
+    for (int u = 0; u < m_n; ++u)
+        arcBase[u + 1] = arcBase[u] + static_cast<int>(m_adj[u].size());
+    const int A = arcBase[m_n];
+
+    // Position of v within m_adj[u] for O(1) arc lookup.
+    std::vector<std::unordered_map<int,int>> pos(m_n);
+    for (int u = 0; u < m_n; ++u)
+        for (int k = 0; k < (int)m_adj[u].size(); ++k)
+            pos[u][m_adj[u][k]] = k;
+    auto arcId = [&](int u, int v) { return arcBase[u] + pos[u].at(v); };
+
+    auto angleBetween = [](double ax, double ay, double bx, double by) -> double {
+        double ma = std::sqrt(ax*ax + ay*ay), mb = std::sqrt(bx*bx + by*by);
+        if (ma < 1e-12 || mb < 1e-12) return 0.0;
+        double c = (ax*bx + ay*by) / (ma*mb);
+        c = std::max(-1.0, std::min(1.0, c));
+        return std::acos(c);
+    };
+
+    std::cout << "Computing prospect status (" << m_n << " destinations, "
+              << A << " arcs, w=" << turnWeight << ")...\n";
+
+    std::vector<double> H(A);
+
+    for (int D = 0; D < m_n; ++D) {
+        std::fill(H.begin(), H.end(), INF);
+
+        using Entry = std::pair<double,int>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> PQ;
+
+        // Base: every arc arriving at D has zero remaining cost.
+        for (int u : m_adj[D]) {
+            int id = arcId(u, D);
+            H[id] = 0.0;
+            PQ.push({0.0, id});
+        }
+
+        while (!PQ.empty()) {
+            auto [h, id] = PQ.top(); PQ.pop();
+            if (h > H[id]) continue;
+
+            // Decode arc (v,w): find v by binary search on arcBase.
+            int v = static_cast<int>(std::upper_bound(arcBase.begin(), arcBase.end(), id)
+                                     - arcBase.begin()) - 1;
+            int w = m_adj[v][id - arcBase[v]];
+
+            // Goal term of the step v→w (same for every predecessor).
+            double gx = centers[D].x - centers[v].x;
+            double gy = centers[D].y - centers[v].y;
+            double sx = centers[w].x - centers[v].x;
+            double sy = centers[w].y - centers[v].y;
+            double goal = angleBetween(sx, sy, gx, gy);
+
+            // Relax every predecessor arc (u,v).
+            for (int u : m_adj[v]) {
+                if (u == w) continue;
+                double hx = centers[v].x - centers[u].x;
+                double hy = centers[v].y - centers[u].y;
+                double turn = angleBetween(hx, hy, sx, sy);
+                double cand = goal + turnWeight * turn + h;
+                int    uid  = arcId(u, v);
+                if (cand < H[uid]) {
+                    H[uid] = cand;
+                    PQ.push({cand, uid});
+                }
+            }
+        }
+
+        // Accumulate origin costs (no turn charged on the first step).
+        for (int O = 0; O < m_n; ++O) {
+            if (O == D) continue;
+            double best = INF;
+            double gx = centers[D].x - centers[O].x;
+            double gy = centers[D].y - centers[O].y;
+            for (int k = 0; k < (int)m_adj[O].size(); ++k) {
+                int v = m_adj[O][k];
+                double hv = H[arcBase[O] + k];
+                if (hv == INF) continue;
+                double sx = centers[v].x - centers[O].x;
+                double sy = centers[v].y - centers[O].y;
+                double c = angleBetween(sx, sy, gx, gy) + hv;
+                if (c < best) best = c;
+            }
+            if (best < INF) status[D] += best * R2D;
+        }
+
+        if ((D + 1) % 50 == 0)
+            std::cout << "  " << (D+1) << " / " << m_n << " destinations done\n";
+    }
+
+    std::cout << "Prospect status complete.\n";
+    return status;
+}
+
 // Topological path — fewest steps (BFS shortest path) to dest.
 NoseResult VisibilityGraph::computeTopoPath(int origin, int dest,
                                              const std::vector<Point>& centers) const {
