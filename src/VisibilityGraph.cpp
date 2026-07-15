@@ -1122,3 +1122,85 @@ std::vector<double> VisibilityGraph::computeAChoice(const std::vector<Point>& ce
     std::cout << "A-choice computation complete.\n";
     return achoice;
 }
+
+// Angular Integration (classic).
+//
+// Pure-angle analogue of computeTopoStatus: for each source s, an arc-state
+// (node,prev) Dijkstra finds the minimum cumulative turning to reach every
+// other node t (best over all arrival directions at t). No distance term,
+// no destination bias -- turn cost only, same 0=straight/pi=U-turn
+// convention as computeAChoicePath. integration[s] = sum of those angular
+// depths (degrees) over all t != s. This is the literal Depthmap-style
+// Angular Integration measure, uncontaminated by gamma or goal-direction.
+std::vector<double> VisibilityGraph::computeAngularIntegration(const std::vector<Point>& centers) const {
+    std::vector<double> integration(m_n, 0.0);
+    const double INF = std::numeric_limits<double>::infinity();
+    const double R2D  = 180.0 / M_PI;
+
+    // Turn deflection at node A, arrived from P, going to V.
+    // 0 = continuing straight ahead, pi = full U-turn.
+    auto turnCost = [&](int P, int A, int V) -> double {
+        if (P < 0) return 0.0;
+        double ax = centers[V].x - centers[A].x;
+        double ay = centers[V].y - centers[A].y;
+        double bx = centers[P].x - centers[A].x;
+        double by = centers[P].y - centers[A].y;
+        double magA = std::sqrt(ax*ax + ay*ay);
+        double magB = std::sqrt(bx*bx + by*by);
+        if (magA < 1e-12 || magB < 1e-12) return 0.0;
+        double cosT = (ax*bx + ay*by) / (magA * magB);
+        cosT = std::max(-1.0, std::min(1.0, cosT));
+        return M_PI - std::acos(cosT);
+    };
+
+    auto encodeState = [&](int node, int prev) { return node * (m_n + 1) + (prev + 1); };
+    auto nodeOf      = [&](int k)               { return k / (m_n + 1); };
+    auto prevOf      = [&](int k)               { return k % (m_n + 1) - 1; };
+
+    std::cout << "Computing angular integration (" << m_n << " sources)...\n";
+
+    for (int s = 0; s < m_n; ++s) {
+        std::unordered_map<int,double> dist;
+        std::vector<double> bestDist(m_n, INF);
+
+        int startKey = encodeState(s, -1);
+        dist[startKey] = 0.0;
+        bestDist[s]    = 0.0;
+
+        using Entry = std::pair<double,int>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> PQ;
+        PQ.push({0.0, startKey});
+
+        while (!PQ.empty()) {
+            auto [d, k] = PQ.top(); PQ.pop();
+            auto it = dist.find(k);
+            if (it == dist.end() || d > it->second) continue;
+
+            int u = nodeOf(k);
+            int p = prevOf(k);
+
+            for (int v : m_adj[u]) {
+                if (v == p) continue;
+                double cost    = d + turnCost(p, u, v);
+                int    nextKey = encodeState(v, u);
+                auto   jt      = dist.find(nextKey);
+                if (jt == dist.end() || cost < jt->second) {
+                    dist[nextKey] = cost;
+                    PQ.push({cost, nextKey});
+                    if (cost < bestDist[v]) bestDist[v] = cost;
+                }
+            }
+        }
+
+        double sum = 0.0;
+        for (int t = 0; t < m_n; ++t)
+            if (t != s && bestDist[t] < INF) sum += bestDist[t];
+        integration[s] = sum * R2D;
+
+        if ((s + 1) % 50 == 0)
+            std::cout << "  " << (s+1) << " / " << m_n << " sources done\n";
+    }
+
+    std::cout << "Angular integration complete.\n";
+    return integration;
+}

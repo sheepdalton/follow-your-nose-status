@@ -43,6 +43,7 @@ static void printUsage(const std::string& prog) {
               << "  --vis-topo-single  topological fewest-steps (BFS) single path SVG\n"
               << "  --prospect-w <w>   prospect turn weight (default: 1; >1 straighter, <1 greedier)\n"
               << "  --vis-prospect-status  heatmap: sum of prospect costs of all routes here\n"
+              << "  --vis-angular-integration  heatmap: classic pure-angle total depth (Depthmap-style)\n"
               << "  --polar-g <g>      polar angle exponent gamma (default: 1; 0=metric, >1=straighter)\n"
               << "  --vis-polar-status-angle    heatmap: sum of angle costs of all polar routes here\n"
               << "  --vis-polar-status-product  heatmap: sum of angle x distance costs of all polar routes here\n"
@@ -82,6 +83,7 @@ int main(int argc, char* argv[]) {
     bool         doVisProspect  = false;
     bool         doVisTopoPath  = false;
     bool         doVisProspectStatus = false;
+    bool         doVisAngularIntegration = false;
     double       polarGamma     = 1.0;
     double       prospectW      = 1.0;
     bool         doVisPolarStatusAngle   = false;
@@ -122,6 +124,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--vis-prospect-single")     { doVisProspect = true; }
         else if (arg == "--vis-topo-single")         { doVisTopoPath = true; }
         else if (arg == "--vis-prospect-status")     { doVisProspectStatus = true; }
+        else if (arg == "--vis-angular-integration") { doVisAngularIntegration = true; }
         else if (arg == "--polar-g" && i+1<argc)     { polarGamma    = std::stod(argv[++i]); }
         else if (arg == "--prospect-w" && i+1<argc)  { prospectW     = std::stod(argv[++i]); }
         else if (arg == "--vis-polar-status-angle")  { doVisPolarStatusAngle   = true; }
@@ -182,8 +185,8 @@ int main(int argc, char* argv[]) {
         // ---- compute all visibility polygons ----
         bool doGates       = !gatesFile.empty();
         bool doPolarStatus = doVisPolarStatusAngle || doVisPolarStatusProduct;
-        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doVisProspectStatus || doPolarStatus || doVisTopoStatus || doGates;
-        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doVisProspectStatus || doPolarStatus || doVisTopoStatus || doGates;
+        bool needMetrics = doCSV || doVisArea || doVisPerim || doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doVisProspectStatus || doVisAngularIntegration || doPolarStatus || doVisTopoStatus || doGates;
+        bool needGraph   = doVisDegree || doVisChoice || doVisDChoice || doVisAChoice || doVisConnects || doVisGraph || doVisNose || doVisPolar || doVisMetric || doVisProspect || doVisTopoPath || doVisProspectStatus || doVisAngularIntegration || doPolarStatus || doVisTopoStatus || doGates;
 
         std::vector<IsovistRecord> records;
         std::vector<Polygon>       polygons; // kept only when graph is required
@@ -429,6 +432,11 @@ int main(int argc, char* argv[]) {
                     for (int i = 0; i < n; ++i)
                         records[i].prospectStatus = ps[i];
                 }
+                if (doVisAngularIntegration || doGates) {
+                    std::vector<double> ai = graph->computeAngularIntegration(centers);
+                    for (int i = 0; i < n; ++i)
+                        records[i].angularIntegration = ai[i];
+                }
             }
 
             MetricsExporter metricsExp;
@@ -470,6 +478,10 @@ int main(int argc, char* argv[]) {
             if (doVisTopoStatus) {
                 fs::path p = outDir / (stem + "-topo-status-" + nStr + ".svg");
                 metricsExp.exportTopoStatusHeatmap(inputPath, p.string(), records, dotRadius);
+            }
+            if (doVisAngularIntegration) {
+                fs::path p = outDir / (stem + "-angular-integration-" + nStr + ".svg");
+                metricsExp.exportAngularIntegrationHeatmap(inputPath, p.string(), records, dotRadius);
             }
             if (doVisProspectStatus) {
                 std::ostringstream wtag;

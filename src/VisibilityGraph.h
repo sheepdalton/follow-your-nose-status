@@ -132,6 +132,15 @@ public:
     // to betweenness but using angular cost rather than hop count.
     std::vector<double> computeAChoice(const std::vector<Point>& centers) const;
 
+    // Angular Integration (classic, Depthmap-style): pure-angle analogue of
+    // computeTopoStatus. For each source, an arc-state (node,prev) Dijkstra
+    // with cost = turn deflection only (0=straight, pi=U-turn; same
+    // convention as computeAChoicePath — no distance, no destination bias)
+    // finds the minimum cumulative turning to every other node; the result
+    // is the sum of those angular depths (degrees). Low = angularly
+    // integrated/central, high = angularly segregated.
+    std::vector<double> computeAngularIntegration(const std::vector<Point>& centers) const;
+
 private:
     int m_n;
     int m_edgeCount = 0;

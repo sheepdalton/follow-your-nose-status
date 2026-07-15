@@ -81,10 +81,16 @@ public:
                                      const std::vector<IsovistRecord>& records,
                                      double dotRadius = 5.0) const;
 
+    // Exports isovist centers coloured by classic angular integration.
+    void exportAngularIntegrationHeatmap(const std::string& inputSVGPath,
+                                         const std::string& outputPath,
+                                         const std::vector<IsovistRecord>& records,
+                                         double dotRadius = 5.0) const;
+
 private:
     enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice,
                         PolarStatusAngle, PolarStatusProduct, TopoStatus,
-                        ProspectStatus };
+                        ProspectStatus, AngularIntegration };
     bool m_flip = false;
     bool m_log  = false;
 
