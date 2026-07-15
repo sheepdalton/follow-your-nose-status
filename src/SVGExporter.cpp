@@ -1,4 +1,6 @@
 #include "SVGExporter.h"
+#include "ColorMap.h"
+#include "SVGLabel.h"
 #include "../vendor/pugixml.hpp"
 #include <stdexcept>
 #include <iostream>
@@ -37,6 +39,8 @@ void SVGExporter::exportSVG(const std::string& inputPath,
         circle.append_attribute("r")    = pointRadius;
         circle.append_attribute("fill") = pointColor.c_str();
     }
+
+    addMeasureLabel(svgNode, "isovists", isovistCenters);
 
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter: failed to write output file: " + outputPath);
@@ -98,6 +102,12 @@ void SVGExporter::exportExperiment(const std::string& inputPath,
         dot.append_attribute("fill") = iso.color.c_str();
     }
 
+    {
+        std::vector<Point> pts;
+        for (const auto& iso : isovists) pts.push_back(iso.center);
+        addMeasureLabel(svgNode, "experiment", pts);
+    }
+
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter::exportExperiment: failed to write: " + outputPath);
 
@@ -105,12 +115,128 @@ void SVGExporter::exportExperiment(const std::string& inputPath,
               << " isovist polygons to: " << outputPath << "\n";
 }
 
+void SVGExporter::exportTopoDepth(const std::string& inputPath,
+                                   const std::string& outputPath,
+                                   const std::vector<Point>& centers,
+                                   const std::vector<int>& topoDepths,
+                                   const NoseResult& nose,
+                                   int origin, int dest,
+                                   double dotRadius) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(inputPath.c_str());
+    if (!result)
+        throw std::runtime_error("SVGExporter::exportTopoDepth: " + std::string(result.description()));
+
+    pugi::xml_node svgNode = doc.child("svg");
+    if (!svgNode)
+        throw std::runtime_error("SVGExporter::exportTopoDepth: no <svg> root.");
+
+    auto fmt = [](double v) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3) << v;
+        return ss.str();
+    };
+    auto fmt2 = [](double v) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(2) << v;
+        return ss.str();
+    };
+
+    int maxDepth = 0;
+    for (int d : topoDepths)
+        maxDepth = std::max(maxDepth, d);
+
+    pugi::xml_node group = svgNode.append_child("g");
+    group.append_attribute("id") = "topo_depth";
+
+    // ── All centres coloured by topological depth ────────────────────────────
+    for (size_t i = 0; i < centers.size(); ++i) {
+        std::string color;
+        double radius = dotRadius;
+
+        if ((int)i == dest) {
+            color  = "#ff00ff";          // magenta
+            radius = dotRadius * 1.5;
+        } else if ((int)i == origin) {
+            color  = "#000000";          // black
+            radius = dotRadius * 1.5;
+        } else if (topoDepths[i] < 0) {
+            color = "#888888";           // unreachable
+        } else {
+            color = valueToColor(static_cast<double>(topoDepths[i]),
+                                 0.0, static_cast<double>(maxDepth));
+        }
+
+        pugi::xml_node c = group.append_child("circle");
+        c.append_attribute("cx")   = fmt(centers[i].x).c_str();
+        c.append_attribute("cy")   = fmt(centers[i].y).c_str();
+        c.append_attribute("r")    = radius;
+        c.append_attribute("fill") = color.c_str();
+    }
+
+    // ── Overlay the nose path ────────────────────────────────────────────────
+    const auto& path = nose.path;
+
+    // Dotted vectors from each path node (except dest) to the destination
+    if (path.size() >= 2) {
+        const Point& d = centers[path.back()];
+        pugi::xml_node vecs = group.append_child("g");
+        vecs.append_attribute("id")               = "dest_vectors";
+        vecs.append_attribute("stroke")           = "#555555";
+        vecs.append_attribute("stroke-width")     = "0.5";
+        vecs.append_attribute("stroke-dasharray") = "2,3";
+        vecs.append_attribute("opacity")          = "0.7";
+        for (int i = 0; i + 1 < (int)path.size(); ++i) {
+            const Point& a = centers[path[i]];
+            pugi::xml_node ln = vecs.append_child("line");
+            ln.append_attribute("x1") = fmt(a.x).c_str();
+            ln.append_attribute("y1") = fmt(a.y).c_str();
+            ln.append_attribute("x2") = fmt(d.x).c_str();
+            ln.append_attribute("y2") = fmt(d.y).c_str();
+        }
+    }
+
+    // Path edges with depth-cost labels
+    for (int i = 0; i + 1 < (int)path.size(); ++i) {
+        const Point& a = centers[path[i]];
+        const Point& b = centers[path[i+1]];
+        double cost    = nose.edgeCosts[i];
+
+        pugi::xml_node ln = group.append_child("line");
+        ln.append_attribute("x1")           = fmt(a.x).c_str();
+        ln.append_attribute("y1")           = fmt(a.y).c_str();
+        ln.append_attribute("x2")           = fmt(b.x).c_str();
+        ln.append_attribute("y2")           = fmt(b.y).c_str();
+        ln.append_attribute("stroke")       = "#000000";
+        ln.append_attribute("stroke-width") = "2.0";
+
+        double mx = (a.x + b.x) * 0.5;
+        double my = (a.y + b.y) * 0.5;
+        pugi::xml_node txt = group.append_child("text");
+        txt.append_attribute("x")           = fmt(mx).c_str();
+        txt.append_attribute("y")           = fmt(my).c_str();
+        txt.append_attribute("font-size")   = "8";
+        txt.append_attribute("fill")        = "#000000";
+        txt.append_attribute("text-anchor") = "middle";
+        txt.text().set(fmt2(cost).c_str());
+    }
+
+    addMeasureLabel(svgNode, "topo-depth", centers);
+
+    std::cout << "Exported topo-depth debug (max depth " << maxDepth
+              << ") to: " << outputPath << "\n";
+
+    if (!doc.save_file(outputPath.c_str()))
+        throw std::runtime_error("SVGExporter::exportTopoDepth: failed to write: " + outputPath);
+}
+
 void SVGExporter::exportNosePath(const std::string& inputPath,
                                   const std::string& outputPath,
                                   const std::vector<Point>& centers,
                                   const NoseResult& nose,
                                   int origin, int dest,
-                                  double dotRadius) {
+                                  double dotRadius,
+                                  const std::string& title) {
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(inputPath.c_str());
     if (!result)
@@ -230,6 +356,8 @@ void SVGExporter::exportNosePath(const std::string& inputPath,
         c.append_attribute("fill") = "#e31a1c";
     }
 
+    addMeasureLabel(svgNode, title, centers);
+
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter::exportNosePath: failed to write: " + outputPath);
 
@@ -261,31 +389,70 @@ void SVGExporter::exportGraph(const std::string& inputPath,
     pugi::xml_node group = svgNode.append_child("g");
     group.append_attribute("id") = "visibility_graph";
 
-    // All edges as thin grey lines (draw each undirected edge once: i < j)
+    // ── Label every node with its connected component ────────────────────────
+    const int nNodes = static_cast<int>(adj.size());
+    std::vector<int> comp(nNodes, -1);
+    std::vector<int> compSize;
+    for (int s = 0; s < nNodes; ++s) {
+        if (comp[s] >= 0) continue;
+        int id = static_cast<int>(compSize.size());
+        int size = 0;
+        std::vector<int> stack{ s };
+        comp[s] = id;
+        while (!stack.empty()) {
+            int v = stack.back(); stack.pop_back();
+            ++size;
+            for (int w : adj[v]) {
+                if (comp[w] < 0) { comp[w] = id; stack.push_back(w); }
+            }
+        }
+        compSize.push_back(size);
+    }
+    int largest = 0;
+    for (size_t c = 1; c < compSize.size(); ++c)
+        if (compSize[c] > compSize[largest]) largest = static_cast<int>(c);
+
+    // Largest component: grey.  Every island: bright cycling colour, fat dots.
+    const std::vector<std::string> palette = {
+        "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
+        "#ff7f00", "#a65628", "#f781bf", "#00ced1"
+    };
+    auto compColor = [&](int c) -> std::string {
+        return (c == largest) ? "#999999" : palette[c % palette.size()];
+    };
+
+    // Edges (each undirected edge once: i < j), coloured by component
     pugi::xml_node lines = group.append_child("g");
-    lines.append_attribute("stroke")       = "#888888";
     lines.append_attribute("stroke-width") = "0.3";
-    lines.append_attribute("opacity")      = "0.4";
-    for (int i = 0; i < (int)adj.size(); ++i) {
+    lines.append_attribute("opacity")      = "0.5";
+    for (int i = 0; i < nNodes; ++i) {
         for (int j : adj[i]) {
             if (j <= i) continue;
             pugi::xml_node ln = lines.append_child("line");
-            ln.append_attribute("x1") = fmt(centers[i].x).c_str();
-            ln.append_attribute("y1") = fmt(centers[i].y).c_str();
-            ln.append_attribute("x2") = fmt(centers[j].x).c_str();
-            ln.append_attribute("y2") = fmt(centers[j].y).c_str();
+            ln.append_attribute("x1")     = fmt(centers[i].x).c_str();
+            ln.append_attribute("y1")     = fmt(centers[i].y).c_str();
+            ln.append_attribute("x2")     = fmt(centers[j].x).c_str();
+            ln.append_attribute("y2")     = fmt(centers[j].y).c_str();
+            ln.append_attribute("stroke") = compColor(comp[i]).c_str();
         }
     }
 
-    // Centres on top
+    // Centres on top; island nodes drawn double size in their island colour
     pugi::xml_node dots = group.append_child("g");
-    dots.append_attribute("fill") = "#333333";
-    for (const auto& p : centers) {
+    for (int i = 0; i < nNodes; ++i) {
+        bool island = (comp[i] != largest);
         pugi::xml_node c = dots.append_child("circle");
-        c.append_attribute("cx") = fmt(p.x).c_str();
-        c.append_attribute("cy") = fmt(p.y).c_str();
-        c.append_attribute("r")  = dotRadius;
+        c.append_attribute("cx")   = fmt(centers[i].x).c_str();
+        c.append_attribute("cy")   = fmt(centers[i].y).c_str();
+        c.append_attribute("r")    = island ? dotRadius * 2.0 : dotRadius;
+        c.append_attribute("fill") = compColor(comp[i]).c_str();
     }
+
+    if (compSize.size() > 1)
+        std::cout << "Graph visual: " << compSize.size() << " components; largest "
+                  << compSize[largest] << " nodes (grey), islands coloured\n";
+
+    addMeasureLabel(svgNode, "visibility graph", centers);
 
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter::exportGraph: failed to write: " + outputPath);
@@ -376,11 +543,98 @@ void SVGExporter::exportAChoicePath(const std::string& inputPath,
         c.append_attribute("fill") = "#e31a1c";
     }
 
+    addMeasureLabel(svgNode, "a-choice path", centers);
+
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter::exportAChoicePath: failed to write: " + outputPath);
 
     std::cout << "Exported A-choice path (" << (path.empty() ? 0 : path.size()-1)
               << " steps) to: " << outputPath << "\n";
+}
+
+void SVGExporter::exportGates(const std::string& inputPath,
+                               const std::string& outputPath,
+                               const std::vector<Point>& centers,
+                               const std::vector<Gate>& gates,
+                               const std::vector<int>& matched,
+                               double dotRadius) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(inputPath.c_str());
+    if (!result)
+        throw std::runtime_error("SVGExporter::exportGates: " + std::string(result.description()));
+
+    pugi::xml_node svgNode = doc.child("svg");
+    if (!svgNode)
+        throw std::runtime_error("SVGExporter::exportGates: no <svg> root.");
+
+    auto fmt = [](double v) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3) << v;
+        return ss.str();
+    };
+
+    pugi::xml_node group = svgNode.append_child("g");
+    group.append_attribute("id") = "gates";
+
+    // All isovist centres as small grey dots
+    for (const auto& p : centers) {
+        pugi::xml_node c = group.append_child("circle");
+        c.append_attribute("cx")   = fmt(p.x).c_str();
+        c.append_attribute("cy")   = fmt(p.y).c_str();
+        c.append_attribute("r")    = dotRadius;
+        c.append_attribute("fill") = "#cccccc";
+    }
+
+    for (size_t g = 0; g < gates.size(); ++g) {
+        const Gate& gate = gates[g];
+        bool ok = matched[g] >= 0;
+
+        // Line from gate to matched isovist centre
+        if (ok) {
+            const Point& c = centers[matched[g]];
+            pugi::xml_node ln = group.append_child("line");
+            ln.append_attribute("x1")           = fmt(gate.x).c_str();
+            ln.append_attribute("y1")           = fmt(gate.y).c_str();
+            ln.append_attribute("x2")           = fmt(c.x).c_str();
+            ln.append_attribute("y2")           = fmt(c.y).c_str();
+            ln.append_attribute("stroke")       = "#1f78b4";
+            ln.append_attribute("stroke-width") = "0.8";
+
+            // Highlight the matched centre
+            pugi::xml_node mc = group.append_child("circle");
+            mc.append_attribute("cx")   = fmt(c.x).c_str();
+            mc.append_attribute("cy")   = fmt(c.y).c_str();
+            mc.append_attribute("r")    = dotRadius * 1.3;
+            mc.append_attribute("fill") = "#1f78b4";
+        }
+
+        // Gate square: blue outline if matched, red if not
+        double s = dotRadius * 2.0;
+        pugi::xml_node sq = group.append_child("rect");
+        sq.append_attribute("x")            = fmt(gate.x - s/2).c_str();
+        sq.append_attribute("y")            = fmt(gate.y - s/2).c_str();
+        sq.append_attribute("width")        = fmt(s).c_str();
+        sq.append_attribute("height")       = fmt(s).c_str();
+        sq.append_attribute("fill")         = "none";
+        sq.append_attribute("stroke")       = ok ? "#1f78b4" : "#e31a1c";
+        sq.append_attribute("stroke-width") = "1.2";
+
+        // Label above the square
+        pugi::xml_node txt = group.append_child("text");
+        txt.append_attribute("x")           = fmt(gate.x).c_str();
+        txt.append_attribute("y")           = fmt(gate.y - s).c_str();
+        txt.append_attribute("font-size")   = "7";
+        txt.append_attribute("fill")        = ok ? "#000000" : "#e31a1c";
+        txt.append_attribute("text-anchor") = "middle";
+        txt.text().set(gate.label.c_str());
+    }
+
+    addMeasureLabel(svgNode, "gates", centers);
+
+    if (!doc.save_file(outputPath.c_str()))
+        throw std::runtime_error("SVGExporter::exportGates: failed to write: " + outputPath);
+
+    std::cout << "Exported " << gates.size() << " gates to: " << outputPath << "\n";
 }
 
 double SVGExporter::computeDotRadius(double openArea, int n) {
@@ -456,6 +710,8 @@ void SVGExporter::exportConnections(const std::string& inputPath,
     sel.append_attribute("cy")   = fmt(src.y).c_str();
     sel.append_attribute("r")    = dotRadius * 2.0;
     sel.append_attribute("fill") = "#e31a1c";
+
+    addMeasureLabel(svgNode, "connections", centers);
 
     if (!doc.save_file(outputPath.c_str()))
         throw std::runtime_error("SVGExporter::exportConnections: failed to write: " + outputPath);

@@ -2,6 +2,7 @@
 #include "FloorPlan.h"
 #include "Polygon.h"
 #include "VisibilityGraph.h"
+#include "Gates.h"
 #include <vector>
 #include <string>
 
@@ -45,14 +46,28 @@ public:
                      const std::vector<std::vector<int>>& adj,
                      double dotRadius = 3.0);
 
+    // Debug: colours every centre by its topological (BFS) depth from the
+    // destination and overlays the nose path (edges with depth labels plus
+    // dotted destination vectors); origin black, destination magenta,
+    // unreachable grey.
+    void exportTopoDepth(const std::string& inputPath,
+                         const std::string& outputPath,
+                         const std::vector<Point>& centers,
+                         const std::vector<int>& topoDepths,
+                         const NoseResult& nose,
+                         int origin, int dest,
+                         double dotRadius = 3.0);
+
     // Draws the Nose Integration single path: edges coloured by depth cost,
-    // text label on each edge showing the depth value.
+    // text label on each edge showing the depth value.  title is the measure
+    // name written at the top-left of the output ("nose", "polar", ...).
     void exportNosePath(const std::string& inputPath,
                         const std::string& outputPath,
                         const std::vector<Point>& centers,
                         const NoseResult& nose,
                         int origin, int dest,
-                        double dotRadius = 3.0);
+                        double dotRadius = 3.0,
+                        const std::string& title = "nose");
 
     // Draws all centres as grey dots, then the angular shortest path as blue lines,
     // intermediate nodes as blue dots, origin as green, destination as red.
@@ -62,6 +77,15 @@ public:
                            const std::vector<int>& path,
                            int origin, int dest,
                            double dotRadius = 3.0);
+
+    // Draws gate locations as labelled squares with a line to their matched
+    // isovist centre (matched[g] == -1 means unmatched, drawn red).
+    void exportGates(const std::string& inputPath,
+                     const std::string& outputPath,
+                     const std::vector<Point>& centers,
+                     const std::vector<Gate>& gates,
+                     const std::vector<int>& matched,
+                     double dotRadius = 3.0);
 
     // Computes dot radius as sqrt(0.5 * openArea / n).
     static double computeDotRadius(double openArea, int n);

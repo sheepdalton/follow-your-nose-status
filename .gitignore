@@ -5,6 +5,14 @@ isovist
 # Generated results (regenerable from data/in + source)
 data/out/
 
+# Saved isovist networks (--NETWORK output; large, machine-specific)
+*-net.csv
+
 # macOS
 .DS_Store
 {nvm_path}/
+*.tar.gz
+*.idraw
+simplifySVG
+JEM_J1_tidy.*
+illustrations/

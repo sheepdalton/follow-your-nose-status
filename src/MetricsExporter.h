@@ -1,5 +1,6 @@
 #pragma once
 #include "IsovistRecord.h"
+#include "Gates.h"
 #include <vector>
 #include <string>
 
@@ -47,8 +48,49 @@ public:
                               const std::vector<IsovistRecord>& records,
                               double dotRadius = 5.0) const;
 
+    // Exports isovist centers coloured by polar centrality status (angle sum).
+    void exportPolarStatusAngleHeatmap(const std::string& inputSVGPath,
+                                       const std::string& outputPath,
+                                       const std::vector<IsovistRecord>& records,
+                                       double dotRadius = 5.0) const;
+
+    // Writes one row per gate: label, coords, count, ln(count) (blank if
+    // count<=0), matched isovist centre/id and all its computed measures.
+    // matched[g] is the isovist index for gate g, or -1 if none in range
+    // (isovist fields are left blank).
+    void exportGateCSV(const std::vector<Gate>& gates,
+                       const std::vector<int>& matched,
+                       const std::vector<IsovistRecord>& records,
+                       const std::string& outputPath) const;
+
+    // Exports isovist centers coloured by polar centrality status (angle×distance sum).
+    void exportPolarStatusProductHeatmap(const std::string& inputSVGPath,
+                                         const std::string& outputPath,
+                                         const std::vector<IsovistRecord>& records,
+                                         double dotRadius = 5.0) const;
+
+    // Exports isovist centers coloured by topological status (total depth).
+    void exportTopoStatusHeatmap(const std::string& inputSVGPath,
+                                 const std::string& outputPath,
+                                 const std::vector<IsovistRecord>& records,
+                                 double dotRadius = 5.0) const;
+
+    // Exports isovist centers coloured by prospect status (goal+turn cost sum).
+    void exportProspectStatusHeatmap(const std::string& inputSVGPath,
+                                     const std::string& outputPath,
+                                     const std::vector<IsovistRecord>& records,
+                                     double dotRadius = 5.0) const;
+
+    // Exports isovist centers coloured by classic angular integration.
+    void exportAngularIntegrationHeatmap(const std::string& inputSVGPath,
+                                         const std::string& outputPath,
+                                         const std::vector<IsovistRecord>& records,
+                                         double dotRadius = 5.0) const;
+
 private:
-    enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice };
+    enum class Metric { Area, Perimeter, Degree, Choice, DChoice, AChoice,
+                        PolarStatusAngle, PolarStatusProduct, TopoStatus,
+                        ProspectStatus, AngularIntegration };
     bool m_flip = false;
     bool m_log  = false;
 

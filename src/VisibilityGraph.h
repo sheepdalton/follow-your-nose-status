@@ -7,6 +7,7 @@
 struct NoseResult {
     std::vector<int>    path;       // node indices from origin to dest
     std::vector<double> edgeCosts;  // cost of each step = angle(node→D, edge) / 90°
+    std::vector<int>    topoDepths; // BFS hop-depth to dest of each path node
     double              totalDepth; // sum of edge costs
 };
 
@@ -35,6 +36,13 @@ public:
     int edgeCount()    const { return m_edgeCount; }
     const std::vector<std::vector<int>>& adjacency() const { return m_adj; }
 
+    // Sizes of the connected components, largest first.
+    // A fully connected graph returns a single entry equal to nodeCount().
+    std::vector<int> componentSizes() const;
+
+    // Component label (0-based, arbitrary order) of every node.
+    std::vector<int> componentLabels() const;
+
     // Betweenness centrality via Brandes' algorithm.
     // For every ordered pair (s,t), each intermediate node on a shortest path
     // accumulates 1/k where k is the number of equal-length shortest paths.
@@ -57,11 +65,81 @@ public:
     NoseResult computeNosePath(int origin, int dest,
                                const std::vector<Point>& centers) const;
 
+    // BFS hop-depth of every node from dest (-1 = unreachable).
+    std::vector<int> computeTopoDepths(int dest) const;
+
+    // Topological status (space syntax total depth / integration):
+    // for each node, the sum of BFS hop-distances to every other node.
+    // Low = topologically integrated, high = segregated.
+    std::vector<double> computeTopoStatus() const;
+
+    // Polar path: like the nose path but the cost of edge A→B is
+    //   (angle(A→D, A→B) / 90°)^gamma × euclidean_distance(A, B)
+    // so the best candidate is both in the right direction AND close.
+    // gamma tunes the balance: 0 = pure metric (angle ignored), 1 = plain
+    // angle×distance, >1 = straightness increasingly dominates.
+    // No topological depth constraint — pure Dijkstra over all neighbours.
+    NoseResult computePolarPath(int origin, int dest,
+                                const std::vector<Point>& centers,
+                                double gamma = 1.0) const;
+
+    // Metric path: shortest route by pure Euclidean edge length (standard
+    // Dijkstra). No angle term and no depth constraint — the walked-distance
+    // baseline for comparison against the nose and polar routes.
+    NoseResult computeMetricPath(int origin, int dest,
+                                 const std::vector<Point>& centers) const;
+
+    // Prospect path: goal-directed least-turn route with foresight of the
+    // onward turn. Arc-state (prev,cur) Dijkstra; step cost is
+    //   goalAngle + turnWeight * turnAngle   (radians, summed; reported in deg)
+    // where goalAngle = deviation of the step from the current bearing to the
+    // destination ("keep heading at T") and turnAngle = deflection from the
+    // previous heading ("dislike changing direction"). turnWeight is the price
+    // of a turn: >1 favours straight principal routes, <1 corrects toward T
+    // more eagerly. No distance term. Models someone who knows the layout.
+    NoseResult computeProspectPath(int origin, int dest,
+                                   const std::vector<Point>& centers,
+                                   double turnWeight = 1.0) const;
+
+    // Topological path: fewest-steps (BFS) route to dest — the traditional
+    // space-syntax shortest path. Reconstructed by descending BFS depth.
+    NoseResult computeTopoPath(int origin, int dest,
+                               const std::vector<Point>& centers) const;
+
+    // Prospect status: for every destination D, the sum over all origins of
+    // the optimal prospect cost (goalAngle + turnWeight*turnAngle, degrees)
+    // of the route O→D. One reverse arc-state Dijkstra per destination
+    // (the turn term depends on arrival direction, so states are directed
+    // links, as in computeProspectPath). Low = reachable from everywhere
+    // with little turning — a follow-your-nose integration.
+    std::vector<double> computeProspectStatus(const std::vector<Point>& centers,
+                                              double turnWeight = 1.0) const;
+
+    // Polar centrality status: for every destination D, sum over all
+    // origins O of (a) the cumulative angle and (b) the cumulative
+    // angle×distance product along the polar-optimal route O→D.
+    // Results are indexed by destination node.
+    // gamma applies the same (angle/90)^gamma weighting as computePolarPath
+    // to the routing cost, so the status reflects the chosen polar routes.
+    void computePolarStatus(const std::vector<Point>& centers,
+                            std::vector<double>& statusAngle,
+                            std::vector<double>& statusProduct,
+                            double gamma = 1.0) const;
+
     // Full A-choice accumulation: runs angular Dijkstra from every source,
     // traces back the least-turn path to every destination, and accumulates
     // 1.0 on each intermediate node.  Produces a heatmap metric analogous
     // to betweenness but using angular cost rather than hop count.
     std::vector<double> computeAChoice(const std::vector<Point>& centers) const;
+
+    // Angular Integration (classic, Depthmap-style): pure-angle analogue of
+    // computeTopoStatus. For each source, an arc-state (node,prev) Dijkstra
+    // with cost = turn deflection only (0=straight, pi=U-turn; same
+    // convention as computeAChoicePath — no distance, no destination bias)
+    // finds the minimum cumulative turning to every other node; the result
+    // is the sum of those angular depths (degrees). Low = angularly
+    // integrated/central, high = angularly segregated.
+    std::vector<double> computeAngularIntegration(const std::vector<Point>& centers) const;
 
 private:
     int m_n;
